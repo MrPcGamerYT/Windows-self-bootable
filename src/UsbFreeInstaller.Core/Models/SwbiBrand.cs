@@ -16,7 +16,7 @@ public static class SwbiBrand
     public const string BrandedTitle = "SWBI — Self Windows Bootable Installer";
     public const string AsciiTitle = "SWBI - Self Windows Bootable Installer";
     public const string AppDataFolderName = "SWBI-SelfWindowsBootableInstaller";
-    public const string CurrentVersion = "1.0.1";
+    public const string CurrentVersion = "1.0.2";
 
     /// <summary>
     /// 10-character uppercase FAT32 volume label (strictly within FAT32's 11-character ASCII limit).
