@@ -1,0 +1,133 @@
+name: Build & Test SWBI (.NET 8 Windows)
+
+on:
+  push:
+    branches: [ main, "arena/**" ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore dependencies
+        run: dotnet restore UsbFreeWindowsInstaller.sln
+
+      - name: Build solution (Release)
+        run: dotnet build UsbFreeWindowsInstaller.sln --configuration Release --no-restore
+
+      - name: Run Core & WPF UI/Binding unit tests
+        run: |
+          $coreOut = dotnet test tests/UsbFreeInstaller.Core.Tests/UsbFreeInstaller.Core.Tests.csproj --configuration Release --no-build --verbosity normal 2>&1
+          $coreExit = $LASTEXITCODE
+          $coreOut | ForEach-Object { Write-Host $_ }
+          if ($coreExit -ne 0) {
+            $errText = ($coreOut | Select-String -Pattern "Failed|Error|Exception|Assert|Actual|Expected" | Out-String).Trim() -replace "\r?\n", " | "
+            Write-Host "::error title=Core.Tests Failed::$errText"
+            exit $coreExit
+          }
+
+          $appOut = dotnet test tests/UsbFreeInstaller.App.Tests/UsbFreeInstaller.App.Tests.csproj --configuration Release --no-build --verbosity normal 2>&1
+          $appExit = $LASTEXITCODE
+          $appOut | ForEach-Object { Write-Host $_ }
+          if ($appExit -ne 0) {
+            $errText = ($appOut | Select-String -Pattern "Failed|Error|Exception|Assert|Actual|Expected|DataError" | Out-String).Trim() -replace "\r?\n", " | "
+            Write-Host "::error title=App.Tests Failed::$errText"
+            exit $appExit
+          }
+
+      - name: Build All Standalone Single-File EXEs (x64, x86 32-bit, arm64, x64-lightweight)
+        run: |
+          New-Item -ItemType Directory -Force -Path isolated-exes | Out-Null
+
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x64 -SelfContained $true -OutputExe "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-standalone.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x86 -SelfContained $true -OutputExe "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x86-32bit.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-arm64 -SelfContained $true -OutputExe "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-arm64-standalone.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x64 -SelfContained $false -OutputExe "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-lightweight.exe"
+
+      - name: End-to-End GUI Smoke Test + Broken 8.3 %TEMP% (NONEXI~1) Torture Test (All Standalone EXEs)
+        run: |
+          if (Test-Path 'C:\Users\NONEXI~1') { throw 'The broken-TEMP fixture must not exist on this runner.' }
+
+          function Assert-BrokenTempExeGuiLaunch([string]$ExeRelPath, [string]$Label, [string[]]$ExtraArgs = @()) {
+            $exePath = Resolve-Path $ExeRelPath
+            $report  = Join-Path $PWD "smoke-report-$Label.json"
+
+            $origTemp = $env:TEMP
+            $origTmp  = $env:TMP
+            try {
+              $env:TEMP = "C:\Users\NONEXI~1\AppData\Local\Temp"
+              $env:TMP  = "C:\Users\NONEXI~1\AppData\Local\Temp"
+              $argList = $ExtraArgs + @("--smoke-test", "--smoke-report", $report)
+              $p = Start-Process -FilePath $exePath -ArgumentList $argList -Wait -PassThru
+            } finally {
+              $env:TEMP = $origTemp
+              $env:TMP  = $origTmp
+            }
+
+            if (Test-Path $report) {
+              $raw = (Get-Content $report -Raw).Trim() -replace "\r?\n", " "
+              Write-Host $raw
+            }
+            if ($p.ExitCode -ne 0 -or -not (Test-Path $report)) {
+              $rawErr = if (Test-Path $report) { (Get-Content $report -Raw).Trim() -replace "\r?\n", " " } else { "No report file written" }
+              Write-Host "::error title=$Label EXE Smoke Test Failed::ExitCode=$($p.ExitCode) $rawErr"
+              exit 1
+            }
+            $json = Get-Content $report -Raw | ConvertFrom-Json
+            if (-not $json.Passed -or $json.BindingErrorCount -ne 0 -or $json.RuntimeErrorCount -ne 0) {
+              Write-Host "::error title=$Label EXE Smoke Report Errors::$($json | ConvertTo-Json -Compress)"
+              exit 2
+            }
+            Write-Host "::notice title=$Label Single-File EXE Torture Test Passed::$($json.Summary)"
+          }
+
+          Write-Host "1. Torture-testing isolated win-x64-standalone.exe with poisoned %TEMP% (NONEXI~1)..."
+          Assert-BrokenTempExeGuiLaunch "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-standalone.exe" "win-x64-standalone"
+
+          Write-Host "2. Testing cached fast-path win-x64-standalone.exe in --cleanup mode..."
+          Assert-BrokenTempExeGuiLaunch "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-standalone.exe" "win-x64-cleanup" @("--cleanup")
+
+          Write-Host "3. Torture-testing isolated 32-bit win-x86-32bit.exe with poisoned %TEMP% (NONEXI~1)..."
+          Assert-BrokenTempExeGuiLaunch "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x86-32bit.exe" "win-x86-32bit"
+
+          Write-Host "4. Torture-testing isolated win-x64-lightweight.exe with poisoned %TEMP% (NONEXI~1)..."
+          Assert-BrokenTempExeGuiLaunch "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-lightweight.exe" "win-x64-lightweight"
+
+          Write-Host "5. Verifying ARM64 single-file standalone EXE (win-arm64-standalone.exe)..."
+          $armItem = Get-Item "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-arm64-standalone.exe"
+          if ($armItem.Length -lt 40MB) {
+            Write-Host "::error title=ARM64 EXE Size Check Failed::Size=$($armItem.Length)"
+            exit 3
+          }
+          Write-Host "::notice title=win-arm64-standalone Single-File EXE Verified::$([Math]::Round($armItem.Length / 1MB, 2)) MB"
+
+      - name: Verify isolated standalone updater replacement and restart
+        run: |
+          ./scripts/Test-StandaloneUpdater.ps1 -StandaloneExe "isolated-exes/SWBI-SelfWindowsBootableInstaller-win-x64-standalone.exe" -AppHost "src/UsbFreeInstaller.App/bin/Release/net8.0-windows/SWBI-SelfWindowsBootableInstaller.exe"
+
+      - name: Upload SWBI Standalone EXE build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: SWBI-SelfWindowsBootableInstaller-all-standalone-exes
+          path: isolated-exes/*.exe
