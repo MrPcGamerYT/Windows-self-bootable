@@ -1,0 +1,213 @@
+name: Release SWBI Built Windows App
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: "Release tag to create/publish (e.g. v1.0.1)"
+        required: true
+        default: "v1.0.1"
+        type: string
+      prerelease:
+        description: "Mark this release as a pre-release"
+        required: false
+        default: false
+        type: boolean
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build, Verify & Publish SWBI GitHub Release (All Standalone EXEs)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine release tag & check if publish is needed
+        id: meta
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ inputs.version_tag }}
+        run: |
+          $shouldRelease = $true
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            if ("${{ github.ref }}" -ne "refs/heads/main") { throw "Manual releases must run from main." }
+            $rawTag = $env:REQUESTED_TAG.Trim()
+          } else {
+            $rawTag = "${{ github.ref_name }}".Trim()
+          }
+          if (-not $rawTag.StartsWith("v")) { $rawTag = "v$rawTag" }
+          if ($rawTag -notmatch '^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z.-]+)?$') {
+            throw "Invalid release tag: $rawTag"
+          }
+          $semver = $rawTag.Substring(1)
+          $numericPart = ($semver -split '-')[0]
+          $brandContent = Get-Content "src/UsbFreeInstaller.Core/Models/SwbiBrand.cs" -Raw
+          $hasBrandVersion = $brandContent -match 'CurrentVersion\s*=\s*"([^"]+)"'
+          if (-not $hasBrandVersion -or $Matches[1] -ne $semver) {
+            throw "Release tag must match the checked-out SwbiBrand.CurrentVersion."
+          }
+          $existingTags = & gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases?per_page=100" --jq '.[].tag_name'
+          if ($LASTEXITCODE -ne 0) { throw "Could not verify existing GitHub releases." }
+          if ($existingTags -contains $rawTag) { throw "Release $rawTag already exists; refusing to overwrite its assets." }
+          $isPre = ("${{ inputs.prerelease }}" -eq "true") -or ($semver -like "*-*")
+
+          "should_release=$($shouldRelease.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "tag=$rawTag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "semver=$semver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "assembly_version=$numericPart.0" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          "is_prerelease=$($isPre.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Resolved ShouldRelease=$shouldRelease, Tag=$rawTag, SemVer=$semver, AssemblyVersion=$numericPart.0"
+
+      - name: Setup .NET 8 SDK
+        if: steps.meta.outputs.should_release == 'true'
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Restore solution
+        if: steps.meta.outputs.should_release == 'true'
+        run: dotnet restore UsbFreeWindowsInstaller.sln
+
+      - name: Build solution & run Core + WPF UI/Binding test suites
+        if: steps.meta.outputs.should_release == 'true'
+        run: |
+          dotnet build UsbFreeWindowsInstaller.sln --configuration Release --no-restore -p:Version=${{ steps.meta.outputs.semver }} -p:AssemblyVersion=${{ steps.meta.outputs.assembly_version }} -p:FileVersion=${{ steps.meta.outputs.assembly_version }}
+          if ($LASTEXITCODE -ne 0) { throw "Solution build failed." }
+          dotnet test tests/UsbFreeInstaller.Core.Tests/UsbFreeInstaller.Core.Tests.csproj --configuration Release --no-build --verbosity normal
+          if ($LASTEXITCODE -ne 0) { throw "Core tests failed." }
+          dotnet test tests/UsbFreeInstaller.App.Tests/UsbFreeInstaller.App.Tests.csproj --configuration Release --no-build --verbosity normal
+          if ($LASTEXITCODE -ne 0) { throw "WPF tests failed." }
+
+      - name: Build & Torture-Test All Standalone Release EXEs (x64, arm64, x86 32-bit, x64-lightweight)
+        if: steps.meta.outputs.should_release == 'true'
+        run: |
+          $tag    = "${{ steps.meta.outputs.tag }}"
+          $ver    = "${{ steps.meta.outputs.semver }}"
+          $asmVer = "${{ steps.meta.outputs.assembly_version }}"
+
+          if (Test-Path release-assets) { Remove-Item -Recurse -Force release-assets }
+          New-Item -ItemType Directory -Force -Path release-assets | Out-Null
+
+          if (Test-Path 'C:\Users\NONEXI~1') { throw 'The broken-TEMP fixture must not exist on this runner.' }
+
+          function Invoke-IsolatedBrokenTempSmokeTest([string]$ExePathToTest, [string]$Label) {
+            $isoDir = Join-Path $PWD "out/isolated-$Label"
+            if (Test-Path $isoDir) { Remove-Item -Recurse -Force $isoDir }
+            New-Item -ItemType Directory -Force -Path $isoDir | Out-Null
+
+            $isoExe = Join-Path $isoDir (Split-Path -Leaf $ExePathToTest)
+            Copy-Item -LiteralPath $ExePathToTest -Destination $isoExe
+            $reportPath = Join-Path $PWD "smoke-report-$Label.json"
+
+            $origTemp = $env:TEMP
+            $origTmp  = $env:TMP
+            try {
+              $env:TEMP = "C:\Users\NONEXI~1\AppData\Local\Temp"
+              $env:TMP  = "C:\Users\NONEXI~1\AppData\Local\Temp"
+              $proc = Start-Process -FilePath $isoExe -ArgumentList @("--smoke-test", "--smoke-report", $reportPath) -Wait -PassThru
+            } finally {
+              $env:TEMP = $origTemp
+              $env:TMP  = $origTmp
+            }
+
+            if (Test-Path $reportPath) { Get-Content $reportPath }
+            if ($proc.ExitCode -ne 0 -or -not (Test-Path $reportPath)) {
+              throw "Release single-file EXE ($Label) failed broken-TEMP GUI smoke test (ExitCode=$($proc.ExitCode))"
+            }
+            $json = Get-Content $reportPath -Raw | ConvertFrom-Json
+            if (-not $json.Passed -or $json.BindingErrorCount -ne 0 -or $json.RuntimeErrorCount -ne 0) {
+              throw "Release single-file EXE ($Label) reported binding/runtime errors: $($json | ConvertTo-Json -Compress)"
+            }
+            Write-Host "==> Verified isolated broken-TEMP GUI launch for $Label ($($json.Summary))" -ForegroundColor Green
+          }
+
+          # 1. win-x64 Self-Contained Single-File EXE (64-bit Windows 10 & 11)
+          $x64Exe = "release-assets/SWBI-SelfWindowsBootableInstaller-$tag-win-x64-standalone.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x64 -SelfContained $true -Version $ver -OutputExe $x64Exe
+          Invoke-IsolatedBrokenTempSmokeTest -ExePathToTest $x64Exe -Label "win-x64-standalone"
+
+          # 2. win-x86 Self-Contained Single-File EXE (32-bit Windows 10 + 32-bit -> 64-bit Upgrade)
+          $x86Exe = "release-assets/SWBI-SelfWindowsBootableInstaller-$tag-win-x86-32bit.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x86 -SelfContained $true -Version $ver -OutputExe $x86Exe
+          Invoke-IsolatedBrokenTempSmokeTest -ExePathToTest $x86Exe -Label "win-x86-32bit"
+
+          # 3. win-arm64 Self-Contained Single-File EXE (ARM64 Windows 10 & 11 — PE 0xAA64 + SWBIEOF1 verified!)
+          $arm64Exe = "release-assets/SWBI-SelfWindowsBootableInstaller-$tag-win-arm64-standalone.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-arm64 -SelfContained $true -Version $ver -OutputExe $arm64Exe
+          if ((Get-Item $arm64Exe).Length -lt 40MB) {
+            throw "ARM64 single-file EXE is unexpectedly small: $((Get-Item $arm64Exe).Length) bytes"
+          }
+
+          # 4. win-x64 Lightweight Framework-Dependent Single-File EXE (.NET 8 Desktop Runtime preinstalled)
+          $lightExe = "release-assets/SWBI-SelfWindowsBootableInstaller-$tag-win-x64-lightweight.exe"
+          & ./build-standalone.ps1 -Configuration Release -Runtime win-x64 -SelfContained $false -Version $ver -OutputExe $lightExe
+          Invoke-IsolatedBrokenTempSmokeTest -ExePathToTest $lightExe -Label "win-x64-lightweight"
+
+          # Test replacement and restart using isolated copies; never modify the release asset.
+          ./scripts/Test-StandaloneUpdater.ps1 -StandaloneExe $x64Exe -AppHost "src/UsbFreeInstaller.App/bin/Release/net8.0-windows/SWBI-SelfWindowsBootableInstaller.exe"
+
+          # 5. Enforce strict EXE-only release policy (ZERO .zip files allowed!)
+          $unexpectedArchives = Get-ChildItem -Path "release-assets" -File | Where-Object { $_.Extension -ne ".exe" }
+          if ($unexpectedArchives.Count -gt 0) {
+            throw "Release policy violation: non-EXE files found in release-assets ($($unexpectedArchives.Name -join ', '))."
+          }
+
+          # 6. Generate SHA-256 Checksums
+          $hashLines = Get-ChildItem -Path "release-assets" -Filter "*.exe" | Sort-Object Name | ForEach-Object {
+            $h = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$h  $($_.Name)"
+          }
+          $hashLines | Set-Content -Path "release-assets/SHA256SUMS.txt" -Encoding UTF8
+          Get-Content "release-assets/SHA256SUMS.txt"
+
+      - name: Publish GitHub Release
+        if: steps.meta.outputs.should_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          name: "SWBI — Self Windows Bootable Installer ${{ steps.meta.outputs.tag }}"
+          prerelease: ${{ steps.meta.outputs.is_prerelease }}
+          generate_release_notes: true
+          body: |
+            ## SWBI — Self Windows Bootable Installer ${{ steps.meta.outputs.tag }}
+
+            Install, Clean-Reinstall, Upgrade, or Downgrade ("Degrade") **any Official or Custom/Modded/Lite Windows 10 or Windows 11 ISO** directly from your internal `C:` drive — **100% USB-free, pendrive-free, and zero external Windows CLI dependencies**.
+
+            ### Standalone `.exe` Downloads (No `.zip` Extraction or Installation Needed)
+            | Executable | Target PC | Notes |
+            |---|---|---|
+            | **`SWBI-SelfWindowsBootableInstaller-${{ steps.meta.outputs.tag }}-win-x64-standalone.exe`** | **64-bit Intel / AMD (`x64`)** | **Recommended for 95% of PCs.** Bundles `.NET 8` + WPF inside a single `%TEMP%`-immune `.exe` — runs out-of-the-box on any 64-bit Windows 10/11 PC. |
+            | **`SWBI-SelfWindowsBootableInstaller-${{ steps.meta.outputs.tag }}-win-arm64-standalone.exe`** | **ARM64 (`Snapdragon / Surface`)** | Native `ARM64` (`0xAA64`) self-contained single-file `.exe` for Windows on ARM laptops. |
+            | **`SWBI-SelfWindowsBootableInstaller-${{ steps.meta.outputs.tag }}-win-x86-32bit.exe`** | **32-bit Intel / AMD (`x86`)** | Self-contained 32-bit `.exe` for 32-bit Windows 10 **and** direct USB-free **`32-bit → 64-bit`** clean upgrades on 64-bit CPUs. |
+            | **`SWBI-SelfWindowsBootableInstaller-${{ steps.meta.outputs.tag }}-win-x64-lightweight.exe`** | **64-bit Intel / AMD (`x64`)** | Ultra-compact (~1 MB) `.exe` for PCs with `.NET 8 Desktop Runtime (x64)` already installed. |
+            | **`SHA256SUMS.txt`** | *Checksums* | Cryptographic SHA-256 verification manifest for every `.exe` asset. |
+
+            ### Safety and validation limits
+            Back up important data and have independent recovery media before changing partitions. Filesystem, partition, firmware and BCD operations are not atomic; failures or power loss may require manual recovery. Automated tests and VHD smoke tests do not prove bootability on your firmware. Test on a disposable Windows VM before relying on a new release. Checksums detect corruption but are not independent signatures.
+
+            ### Quick-Start User Guide
+            1. **Run as Administrator**, review **Step 1 (PC & Drive Scan)**, and select any Windows 10/11 `.iso` in **Step 2**.
+            2. Photograph/save your **Step 3 Partition Cheat Sheet**, uncheck **`Dry-Run Safety Mode`** in **Step 4**, and click **`Build 'SWBI-SETUP' & Arm SWBI Boot`**.
+            3. Click **`Restart Now into SWBI - Self Windows Bootable Installer`** in **Step 5** — inside Windows Setup, format/delete **only** your old shrunk `C:` (**never** touch `SWBI-SETUP`!).
+            4. Once your fresh Windows desktop opens, run SWBI → **`2. Post-Install Cleanup`** to delete `SWBI-SETUP` and expand `C:` back to **100% full capacity** online.
+
+            Full documentation & architecture guide: **[README.md](https://github.com/MrPcGamerYT/Windows-self-bootable#readme)**
+          files: |
+            release-assets/*.exe
+            release-assets/SHA256SUMS.txt
