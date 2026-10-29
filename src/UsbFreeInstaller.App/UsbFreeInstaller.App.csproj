@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\swbi.ico</ApplicationIcon>
+    <RootNamespace>UsbFreeInstaller.App</RootNamespace>
+    <AssemblyName>SWBI-SelfWindowsBootableInstaller</AssemblyName>
+    <Product>SWBI - Self Windows Bootable Installer</Product>
+    <Title>SWBI — Self Windows Bootable Installer</Title>
+    <Description>SWBI (Self Windows Bootable Installer) — Smart self-bootable Windows 10/11 installer for HDD, SATA SSD, NVMe, Intel VMD RAID &amp; eMMC supporting Clean Install, Upgrade, and Downgrade without USB media.</Description>
+    <Version>1.0.1</Version>
+    <Authors>MrPcGamerYT &amp; SWBI Contributors</Authors>
+    <Company>SWBI Project</Company>
+    <Copyright>Copyright (c) 2026 MrPcGamerYT &amp; SWBI Contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/MrPcGamerYT/Windows-self-bootable</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MrPcGamerYT/Windows-self-bootable.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\swbi.ico" />
+    <Resource Include="Assets\swbi-logo.png" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\UsbFreeInstaller.Core\UsbFreeInstaller.Core.csproj" />
+  </ItemGroup>
+
+</Project>

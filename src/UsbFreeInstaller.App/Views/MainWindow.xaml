@@ -1,0 +1,1341 @@
+<Window x:Class="UsbFreeInstaller.App.Views.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="SWBI — Self Windows Bootable Installer (Upgrade • Reinstall • Downgrade)"
+        Icon="pack://application:,,,/SWBI-SelfWindowsBootableInstaller;component/Assets/swbi.ico"
+        Width="1160"
+        Height="760"
+        MinWidth="940"
+        MinHeight="620"
+        WindowStartupLocation="CenterScreen"
+        UseLayoutRounding="True"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Display"
+        Background="{StaticResource BgCanvasBrush}"
+        Foreground="{StaticResource TextPrimaryBrush}"
+        FontFamily="Segoe UI">
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <!-- ==================== TOP HEADER & MODE SWITCHER BAR ==================== -->
+        <Border Grid.Row="0"
+                Background="{StaticResource BgSurfaceBrush}"
+                BorderBrush="{StaticResource BorderSubtleBrush}"
+                BorderThickness="0,0,0,1"
+                Padding="18,10">
+            <Grid x:Name="TopHeaderGrid">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <!-- Left Brand & Hardware Identity Cluster (Auto-Wrapping, Zero Clipping) -->
+                <Grid x:Name="HeaderBrandPanel" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,16,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Grid.Column="0"
+                            Width="44"
+                            Height="44"
+                            CornerRadius="10"
+                            Background="#111C33"
+                            BorderBrush="#293E66"
+                            BorderThickness="1"
+                            Padding="4"
+                            Margin="0,0,12,0"
+                            VerticalAlignment="Center">
+                        <Image Source="pack://application:,,,/SWBI-SelfWindowsBootableInstaller;component/Assets/swbi-logo.png"
+                               RenderOptions.BitmapScalingMode="HighQuality" />
+                    </Border>
+
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                        <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <TextBlock Text="SWBI"
+                                       FontSize="18.5"
+                                       FontWeight="Bold"
+                                       Foreground="#FFFFFF"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Text=" — Self Windows Bootable Installer"
+                                       FontSize="15.5"
+                                       FontWeight="SemiBold"
+                                       Foreground="#CBD5E1"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center" />
+
+                            <!-- Version Pill -->
+                            <Border Background="#0C2D48"
+                                    BorderBrush="#0284C7"
+                                    BorderThickness="1"
+                                    CornerRadius="5"
+                                    Padding="7,2"
+                                    Margin="0,2,6,2"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="{Binding VersionBadgeText, Mode=OneWay}"
+                                           FontSize="10.5"
+                                           FontWeight="Bold"
+                                           Foreground="#7DD3FC" />
+                            </Border>
+
+                            <!-- Elevation Status Pill -->
+                            <Border Background="#063429"
+                                    BorderBrush="#10B981"
+                                    BorderThickness="1"
+                                    CornerRadius="5"
+                                    Padding="8,2"
+                                    Margin="0,2,6,2"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="{Binding ElevationPillText, Mode=OneWay}"
+                                           FontSize="10.5"
+                                           FontWeight="Bold"
+                                           Foreground="#6EE7B7" />
+                            </Border>
+
+                            <Button Content="Elevate as Admin"
+                                    Command="{Binding ElevateAsAdminCommand}"
+                                    Visibility="{Binding ShowElevateButton, Converter={StaticResource BoolToVis}, Mode=OneWay}"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    Padding="8,2"
+                                    FontSize="11"
+                                    Margin="0,2,6,2"
+                                    VerticalAlignment="Center" />
+
+                            <!-- Detected Drive Hardware Pill -->
+                            <Border Background="#1B1947"
+                                    BorderBrush="#6366F1"
+                                    BorderThickness="1"
+                                    CornerRadius="5"
+                                    Padding="8,2"
+                                    Margin="0,2,0,2"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="{Binding DriveTypeBadgeText, Mode=OneWay}"
+                                           FontSize="10.5"
+                                           FontWeight="Bold"
+                                           Foreground="#C7D2FE" />
+                            </Border>
+                        </WrapPanel>
+
+                        <TextBlock Text="Boot entry: 'SWBI - Self Windows Bootable Installer'  •  Partition: 'SWBI-SETUP'  •  USB-Free Upgrade, Reinstall &amp; Downgrade"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   FontSize="11.5"
+                                   TextTrimming="CharacterEllipsis"
+                                   Margin="0,3,0,0" />
+                    </StackPanel>
+                </Grid>
+
+                <!-- Right Segmented Mode Switcher + Clean Pill Controls -->
+                <StackPanel x:Name="HeaderActionPanel" Grid.Column="1" Orientation="Vertical" HorizontalAlignment="Right" VerticalAlignment="Center">
+                    <!-- Segmented Top Navigation -->
+                    <Border Background="#080D19"
+                            BorderBrush="#1F2D46"
+                            BorderThickness="1"
+                            CornerRadius="8"
+                            Padding="3"
+                            HorizontalAlignment="Right"
+                            Margin="0,0,0,6">
+                        <StackPanel Orientation="Horizontal">
+                            <Button Content="1. Prepare Installer"
+                                    Command="{Binding SelectWizardTabCommand}"
+                                    Style="{StaticResource ModeSegmentButtonStyle}"
+                                    Background="{Binding IsWizardTabSelected, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                                    Margin="0,0,3,0" />
+                            <Button Content="2. Post-Install Cleanup"
+                                    Command="{Binding SelectCleanupTabCommand}"
+                                    Style="{StaticResource ModeSegmentButtonStyle}"
+                                    Background="{Binding IsCleanupTabSelected, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}" />
+                        </StackPanel>
+                    </Border>
+
+                    <!-- Safety Mode & Optional Simulation Lab Strip -->
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                        <Border Background="{Binding IsDryRunMode, Converter={StaticResource ExecModePillBrush}, Mode=OneWay}"
+                                CornerRadius="5"
+                                Padding="7,2"
+                                Margin="0,0,8,0"
+                                VerticalAlignment="Center">
+                            <TextBlock Text="{Binding ExecutionModeShortText, Mode=OneWay}"
+                                       Foreground="{Binding IsDryRunMode, Converter={StaticResource ExecModeTextBrush}, Mode=OneWay}"
+                                       FontSize="10"
+                                       FontWeight="Bold" />
+                        </Border>
+
+                        <CheckBox Content="Dry-Run Safety"
+                                  IsChecked="{Binding IsDryRunMode}"
+                                  Style="{StaticResource PillToggleSwitchStyle}"
+                                  Foreground="#7DD3FC"
+                                  Margin="0,0,12,0"
+                                  VerticalAlignment="Center" />
+
+                        <CheckBox Content="Sim Lab"
+                                  IsChecked="{Binding UseSimulationScenario}"
+                                  Style="{StaticResource PillToggleSwitchStyle}"
+                                  Foreground="{StaticResource TextSecondaryBrush}"
+                                  VerticalAlignment="Center" />
+
+                        <ComboBox ItemsSource="{Binding SimulationScenarios}"
+                                  SelectedItem="{Binding SelectedScenario}"
+                                  DisplayMemberPath="DisplayName"
+                                  Style="{StaticResource ModernComboBoxStyle}"
+                                  Visibility="{Binding UseSimulationScenario, Converter={StaticResource BoolToVis}, Mode=OneWay}"
+                                  Width="215"
+                                  Margin="8,0,0,0"
+                                  VerticalAlignment="Center" />
+                    </StackPanel>
+                    <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,5,0,0">
+                        <TextBlock Text="{Binding UpdateStatusText, Mode=OneWay}"
+                                   Foreground="{StaticResource TextSecondaryBrush}" FontSize="10.5"
+                                   MaxWidth="220" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" Margin="0,0,8,0" />
+                        <ProgressBar Width="70" Height="7" Minimum="0" Maximum="100"
+                                     Value="{Binding UpdateProgressPercent, Mode=OneWay}"
+                                     Visibility="{Binding IsUpdateRunning, Converter={StaticResource BoolToVis}, Mode=OneWay}"
+                                     VerticalAlignment="Center" Margin="0,0,6,0" />
+                        <Button Content="Cancel" Command="{Binding CancelOperationCommand}"
+                                Visibility="{Binding IsUpdateRunning, Converter={StaticResource BoolToVis}, Mode=OneWay}"
+                                Style="{StaticResource SecondaryButtonStyle}" Padding="6,2" FontSize="10.5" Margin="0,0,5,0" />
+                        <Button Content="Check updates" Command="{Binding CheckForUpdatesCommand}"
+                                Style="{StaticResource SecondaryButtonStyle}" Padding="8,2" FontSize="10.5" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- ==================== MAIN CONTENT AREA ==================== -->
+        <!-- 1. WIZARD VIEW -->
+        <Grid Grid.Row="1" Visibility="{Binding IsWizardTabSelected, Converter={StaticResource BoolToVis}}">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <!-- Modern 5-Step Connected Stepper Bar -->
+            <Border Grid.Row="0"
+                    Background="#0A101E"
+                    BorderBrush="{StaticResource BorderSubtleBrush}"
+                    BorderThickness="0,0,0,1"
+                    Padding="18,9">
+                <UniformGrid Rows="1" Columns="5">
+                    <!-- Step 1 -->
+                    <Button Command="{Binding JumpToStepCommand}"
+                            CommandParameter="1"
+                            Style="{StaticResource WizardStepButtonStyle}"
+                            Background="{Binding IsStep1, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                            BorderBrush="{Binding IsStep1, Converter={StaticResource ActiveBorderBrush}, Mode=OneWay}"
+                            Margin="0,0,5,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Border CornerRadius="11" Background="#1E293B" Visibility="{Binding IsStep1Done, Converter={StaticResource BoolToVis}, ConverterParameter=Invert, Mode=OneWay}">
+                                    <TextBlock Text="1" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <Border CornerRadius="11" Background="#10B981" Visibility="{Binding IsStep1Done, Converter={StaticResource BoolToVis}, Mode=OneWay}">
+                                    <Path Data="M 0,4 L 3,7 L 8,1" Stroke="#FFFFFF" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="PC &amp; Drive" FontWeight="Bold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="Hardware Scan" FontSize="10.5" Foreground="#CBD5E1" Opacity="0.8" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- Step 2 -->
+                    <Button Command="{Binding JumpToStepCommand}"
+                            CommandParameter="2"
+                            Style="{StaticResource WizardStepButtonStyle}"
+                            Background="{Binding IsStep2, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                            BorderBrush="{Binding IsStep2, Converter={StaticResource ActiveBorderBrush}, Mode=OneWay}"
+                            Margin="3,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Border CornerRadius="11" Background="#1E293B" Visibility="{Binding IsStep2Done, Converter={StaticResource BoolToVis}, ConverterParameter=Invert, Mode=OneWay}">
+                                    <TextBlock Text="2" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <Border CornerRadius="11" Background="#10B981" Visibility="{Binding IsStep2Done, Converter={StaticResource BoolToVis}, Mode=OneWay}">
+                                    <Path Data="M 0,4 L 3,7 L 8,1" Stroke="#FFFFFF" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="ISO &amp; Mode" FontWeight="Bold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="Win 10 / 11 ISO" FontSize="10.5" Foreground="#CBD5E1" Opacity="0.8" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- Step 3 -->
+                    <Button Command="{Binding JumpToStepCommand}"
+                            CommandParameter="3"
+                            Style="{StaticResource WizardStepButtonStyle}"
+                            Background="{Binding IsStep3, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                            BorderBrush="{Binding IsStep3, Converter={StaticResource ActiveBorderBrush}, Mode=OneWay}"
+                            Margin="3,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Border CornerRadius="11" Background="#1E293B" Visibility="{Binding IsStep3Done, Converter={StaticResource BoolToVis}, ConverterParameter=Invert, Mode=OneWay}">
+                                    <TextBlock Text="3" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <Border CornerRadius="11" Background="#10B981" Visibility="{Binding IsStep3Done, Converter={StaticResource BoolToVis}, Mode=OneWay}">
+                                    <Path Data="M 0,4 L 3,7 L 8,1" Stroke="#FFFFFF" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="Partition Plan" FontWeight="Bold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="Cheat Sheet" FontSize="10.5" Foreground="#CBD5E1" Opacity="0.8" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- Step 4 -->
+                    <Button Command="{Binding JumpToStepCommand}"
+                            CommandParameter="4"
+                            Style="{StaticResource WizardStepButtonStyle}"
+                            Background="{Binding IsStep4, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                            BorderBrush="{Binding IsStep4, Converter={StaticResource ActiveBorderBrush}, Mode=OneWay}"
+                            Margin="3,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Grid Grid.Column="0" Width="22" Height="22" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <Border CornerRadius="11" Background="#1E293B" Visibility="{Binding IsStep4Done, Converter={StaticResource BoolToVis}, ConverterParameter=Invert, Mode=OneWay}">
+                                    <TextBlock Text="4" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                                <Border CornerRadius="11" Background="#10B981" Visibility="{Binding IsStep4Done, Converter={StaticResource BoolToVis}, Mode=OneWay}">
+                                    <Path Data="M 0,4 L 3,7 L 8,1" Stroke="#FFFFFF" StrokeThickness="1.8" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                </Border>
+                            </Grid>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="Prepare Disk" FontWeight="Bold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="Shrink &amp; Drivers" FontSize="10.5" Foreground="#CBD5E1" Opacity="0.8" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+
+                    <!-- Step 5 -->
+                    <Button Command="{Binding JumpToStepCommand}"
+                            CommandParameter="5"
+                            Style="{StaticResource WizardStepButtonStyle}"
+                            Background="{Binding IsStep5, Converter={StaticResource ActiveTabBrush}, Mode=OneWay}"
+                            BorderBrush="{Binding IsStep5, Converter={StaticResource ActiveBorderBrush}, Mode=OneWay}"
+                            Margin="5,0,0,0">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <Border Grid.Column="0" Width="22" Height="22" CornerRadius="11" Background="#1E293B" Margin="0,0,8,0" VerticalAlignment="Center">
+                                <TextBlock Text="5" FontSize="11" FontWeight="Bold" Foreground="#FFFFFF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                <TextBlock Text="Reboot &amp; Setup" FontWeight="Bold" FontSize="12.5" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="Boot Into SWBI" FontSize="10.5" Foreground="#CBD5E1" Opacity="0.8" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                        </Grid>
+                    </Button>
+                </UniformGrid>
+            </Border>
+
+            <!-- Step Content ScrollViewer -->
+            <ScrollViewer x:Name="WizardContentScrollViewer"
+                          Grid.Row="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="18,14">
+                <Grid>
+
+                    <!-- ============ STEP 1: SYSTEM & UNIVERSAL DRIVE SCAN ============ -->
+                    <StackPanel Visibility="{Binding IsStep1, Converter={StaticResource BoolToVis}}">
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel>
+                                <!-- Header Row -->
+                                <Grid Margin="0,0,0,12">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                        <TextBlock Text="Step 1 — Smart PC Hardware, OS Build &amp; Universal C: Drive Inspection"
+                                                   FontSize="15.5"
+                                                   FontWeight="Bold" />
+                                        <TextBlock Text="{Binding DriveTuningSummaryText}"
+                                                   Foreground="#A5B4FC"
+                                                   FontSize="12"
+                                                   TextWrapping="Wrap"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="↻  Re-Scan PC &amp; Drive"
+                                            Command="{Binding RefreshSystemScanCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            VerticalAlignment="Top" />
+                                </Grid>
+
+                                <!-- 4 Modern Hardware & Capacity Stat Tiles -->
+                                <UniformGrid Rows="1" Columns="4">
+                                    <Border Style="{StaticResource StatTileBorderStyle}" Margin="0,0,8,0">
+                                        <StackPanel>
+                                            <TextBlock Text="HOST WINDOWS OS" FontSize="10" FontWeight="Bold" Foreground="#64748B" />
+                                            <TextBlock Text="{Binding StatOsTitleText, Mode=OneWay}" FontSize="13" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,3,0,2" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding StatOsSubText, Mode=OneWay}" FontSize="11" Foreground="#7DD3FC" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource StatTileBorderStyle}" Margin="4,0">
+                                        <StackPanel>
+                                            <TextBlock Text="PROCESSOR, RAM &amp; TPM" FontSize="10" FontWeight="Bold" Foreground="#64748B" />
+                                            <TextBlock Text="{Binding StatHwTitleText, Mode=OneWay}" FontSize="13" FontWeight="Bold" Foreground="#F8FAFC" Margin="0,3,0,2" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding StatHwSubText, Mode=OneWay}" FontSize="11" Foreground="#94A3B8" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource StatTileBorderStyle}" Margin="4,0">
+                                        <StackPanel>
+                                            <TextBlock Text="SYSTEM DISK &amp; TABLE" FontSize="10" FontWeight="Bold" Foreground="#64748B" />
+                                            <TextBlock Text="{Binding StatDiskTitleText, Mode=OneWay}" FontSize="13" FontWeight="Bold" Foreground="#38BDF8" Margin="0,3,0,2" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding StatDiskSubText, Mode=OneWay}" FontSize="11" Foreground="#94A3B8" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <Border Style="{StaticResource StatTileBorderStyle}" Margin="8,0,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="SAFE SHRINKABLE C:" FontSize="10" FontWeight="Bold" Foreground="#64748B" />
+                                            <TextBlock Text="{Binding StatShrinkTitleText, Mode=OneWay}" FontSize="13" FontWeight="Bold" Foreground="#34D399" Margin="0,3,0,2" TextTrimming="CharacterEllipsis" />
+                                            <TextBlock Text="{Binding StatShrinkSubText, Mode=OneWay}" FontSize="11" Foreground="#94A3B8" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                    </Border>
+                                </UniformGrid>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Modern Disk Partition Map Card -->
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0"
+                                               Text="Current Physical Partition Layout on System Disk"
+                                               FontWeight="SemiBold"
+                                               FontSize="13.5" />
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding TargetDiskHeader}"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               FontSize="11.5"
+                                               VerticalAlignment="Center" />
+                                </Grid>
+
+                                <!-- Proportional Ribbon Bar -->
+                                <Border Background="#090F1C"
+                                        BorderBrush="#1E293B"
+                                        BorderThickness="1"
+                                        CornerRadius="6"
+                                        Padding="3"
+                                        Margin="0,0,0,10">
+                                    <ItemsControl ItemsSource="{Binding BeforeDiskSegments}">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal" />
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="{Binding AccentBrush}"
+                                                        Width="{Binding RibbonWidthPx}"
+                                                        Height="10"
+                                                        CornerRadius="3"
+                                                        Margin="0,0,3,0" />
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </Border>
+
+                                <!-- Partition Detail Cards -->
+                                <ItemsControl ItemsSource="{Binding BeforeDiskSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{Binding SurfaceTintBrush}"
+                                                    BorderBrush="{Binding AccentBrush}"
+                                                    BorderThickness="1,3,1,1"
+                                                    Width="{Binding RelativeWidthPx}"
+                                                    MinWidth="140"
+                                                    CornerRadius="8"
+                                                    Padding="12,8"
+                                                    Margin="0,0,8,6">
+                                                <StackPanel>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Grid.Column="0"
+                                                                   Text="{Binding Title}"
+                                                                   FontWeight="Bold"
+                                                                   FontSize="12.5"
+                                                                   Foreground="#FFFFFF"
+                                                                   TextTrimming="CharacterEllipsis" />
+                                                        <TextBlock Grid.Column="1"
+                                                                   Text="{Binding PercentShareText}"
+                                                                   FontSize="10.5"
+                                                                   FontWeight="SemiBold"
+                                                                   Foreground="#CBD5E1"
+                                                                   Margin="6,0,0,0" />
+                                                    </Grid>
+                                                    <TextBlock Text="{Binding Subtitle}"
+                                                               FontSize="12"
+                                                               FontWeight="SemiBold"
+                                                               Foreground="#E2E8F0"
+                                                               Margin="0,2,0,4" />
+                                                    <Border Background="#0A101D"
+                                                            CornerRadius="4"
+                                                            Padding="6,2"
+                                                            HorizontalAlignment="Left">
+                                                        <TextBlock Text="{Binding Badge}"
+                                                                   FontSize="10"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#7DD3FC" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Safety Checks List -->
+                        <Border Style="{StaticResource CardBorderStyle}" Margin="0">
+                            <StackPanel>
+                                <TextBlock Text="Safety, Compatibility &amp; Drive Readiness Checks"
+                                           FontWeight="SemiBold"
+                                           FontSize="13.5"
+                                           Margin="0,0,0,10" />
+                                <ItemsControl ItemsSource="{Binding ReadinessChecks}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{Binding Severity, Converter={StaticResource SeveritySurfaceBrush}}"
+                                                    BorderBrush="{Binding Severity, Converter={StaticResource SeverityBrush}}"
+                                                    BorderThickness="3,1,1,1"
+                                                    CornerRadius="8"
+                                                    Padding="12,9"
+                                                    Margin="0,0,0,7">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="86" />
+                                                        <ColumnDefinition Width="*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <Border Grid.Column="0"
+                                                            Background="{Binding Severity, Converter={StaticResource SeverityBrush}}"
+                                                            CornerRadius="5"
+                                                            Padding="7,3"
+                                                            HorizontalAlignment="Left"
+                                                            VerticalAlignment="Top">
+                                                        <TextBlock Text="{Binding Severity, Converter={StaticResource SeverityBadgeText}}"
+                                                                   FontSize="10"
+                                                                   FontWeight="Bold"
+                                                                   Foreground="#070C17" />
+                                                    </Border>
+                                                    <StackPanel Grid.Column="1">
+                                                        <TextBlock Text="{Binding Title}" FontWeight="SemiBold" FontSize="13" />
+                                                        <TextBlock Text="{Binding Summary}"
+                                                                   Foreground="#CBD5E1"
+                                                                   FontSize="12"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,2,0,0" />
+                                                        <TextBlock Text="{Binding RemediationHint}"
+                                                                   Foreground="#FDE68A"
+                                                                   FontSize="11.5"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,4,0,0"
+                                                                   Visibility="{Binding RemediationHint, Converter={StaticResource NullToVis}}" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ============ STEP 2: ISO SELECTION & SMART UPGRADE / DOWNGRADE ADVISOR ============ -->
+                    <StackPanel Visibility="{Binding IsStep2, Converter={StaticResource BoolToVis}}">
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel>
+                                <TextBlock Text="Step 2 — Select Any Official or Custom Windows 10 / 11 ISO"
+                                           FontSize="15.5"
+                                           FontWeight="Bold" />
+                                <TextBlock Text="Supports ALL bootable Windows 10 &amp; Windows 11 ISOs — Official Microsoft ISOs as well as Custom, Lite, Debloated, AIO &amp; Dual-Arch ISOs (Tiny10/Tiny11, Ghost Spectre, AtlasOS, ReviOS, NTLite, UUPdump, MCT). Inspected directly in memory without requiring Windows Virtual DVD drive letters."
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="12.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,12" />
+
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox Grid.Column="0"
+                                             Text="{Binding IsoPathInput, UpdateSourceTrigger=PropertyChanged}"
+                                             Style="{StaticResource ModernTextBoxStyle}" />
+                                    <Button Grid.Column="1"
+                                            Content="Browse ISO..."
+                                            Command="{Binding BrowseIsoCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Margin="8,0,0,0" />
+                                    <Button Grid.Column="2"
+                                            Content="Inspect &amp; Analyze"
+                                            Command="{Binding ValidateIsoCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Margin="8,0,0,0" />
+                                </Grid>
+
+                                <CheckBox Content="Compute full SHA-256 checksum during inspection (recommended for newly downloaded ISOs)"
+                                          IsChecked="{Binding ComputeIsoSha256}"
+                                          Style="{StaticResource ModernCheckBoxStyle}"
+                                          Margin="0,10,0,0" />
+
+                                <ProgressBar Value="{Binding IsoHashPercent, Mode=OneWay}"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Style="{StaticResource ModernProgressBarStyle}"
+                                             Margin="0,6,0,0"
+                                             Visibility="{Binding ShowIsoHashProgress, Converter={StaticResource BoolToVis}}" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Smart PC Upgrade / Reinstall / Downgrade Advisor Card -->
+                        <Border Background="#0C1629"
+                                BorderBrush="#0284C7"
+                                BorderThickness="1.5"
+                                CornerRadius="10"
+                                Padding="16,14"
+                                Margin="0,0,0,12">
+                            <StackPanel>
+                                <WrapPanel Orientation="Horizontal" VerticalAlignment="Center">
+                                    <Border Background="#0284C7" CornerRadius="5" Padding="8,3" Margin="0,0,10,2">
+                                        <TextBlock Text="{Binding TransitionBadgeText}" FontWeight="Bold" FontSize="11" Foreground="#FFFFFF" />
+                                    </Border>
+                                    <TextBlock Text="{Binding TransitionHeadlineText}" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                </WrapPanel>
+                                <TextBlock Text="{Binding TransitionExplanationText}"
+                                           Foreground="#CBD5E1"
+                                           FontSize="12.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,8,0,10"
+                                           Visibility="{Binding TransitionExplanationText, Converter={StaticResource NullToVis}}" />
+
+                                <TextBlock Text="Select Preferred Installation Workflow:"
+                                           FontWeight="SemiBold"
+                                           FontSize="12.5"
+                                           Foreground="#7DD3FC"
+                                           Margin="0,2,0,6" />
+                                <ComboBox ItemsSource="{Binding AvailableWorkflowOptions}"
+                                          SelectedItem="{Binding SelectedWorkflowOption}"
+                                          DisplayMemberPath="DisplayLabel"
+                                          Style="{StaticResource ModernComboBoxStyle}" />
+
+                                <TextBlock Text="Smart Hardware &amp; Edition Compatibility Automation (Auto-Configured for Your PC):"
+                                           FontWeight="SemiBold"
+                                           FontSize="12.5"
+                                           Foreground="#7DD3FC"
+                                           Margin="0,12,0,4" />
+
+                                <CheckBox Content="Export this PC's active Storage (NVMe/VMD/SATA) &amp; Network (Wi-Fi/LAN) drivers into SWBI-SETUP\$WinPEDriver$ &amp; 'SWBI - Self Windows Bootable Installer Drivers'"
+                                          IsChecked="{Binding ExportHostDrivers}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="Inject boot-critical Storage Controller drivers directly into WinPE boot.wim (essential for Intel VMD/RST &amp; Windows 11 -> 10 downgrades on modern NVMe PCs)"
+                                          IsChecked="{Binding InjectBootWimStorageDrivers}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="Generate sources\ei.cfg Edition Unlock (if ISO has none) so Windows Setup lets you choose Home, Pro, Education, etc. freely"
+                                          IsChecked="{Binding WriteEiCfgEditionUnlock}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="Bypass Windows 11 Hardware Requirements in Setup (LabConfig: TPM 2.0, CPU, Secure Boot, 4 GB RAM &amp; 64 GB storage — auto-enabled when needed)"
+                                          IsChecked="{Binding BypassWin11HardwareChecks}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="Run drive-type-aware pre-shrink volume optimization (SSD/NVMe ReTrim vs. HDD tail consolidation; never defrags flash)"
+                                          IsChecked="{Binding RunDrivePreShrinkOptimize}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Style="{StaticResource CardBorderStyle}" Margin="0">
+                            <StackPanel>
+                                <TextBlock Text="ISO Validation &amp; FAT32 Split Strategy"
+                                           FontWeight="SemiBold"
+                                           FontSize="14" />
+                                <TextBlock Text="{Binding IsoSummaryBanner}"
+                                           Foreground="#38BDF8"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,8" />
+                                <TextBlock Text="{Binding SelectedIsoSha256}"
+                                           FontFamily="Consolas"
+                                           FontSize="12"
+                                           Foreground="#6EE7B7"
+                                           TextWrapping="Wrap"
+                                           Visibility="{Binding SelectedIsoSha256, Converter={StaticResource NullToVis}}"
+                                           Margin="0,0,0,8" />
+                                <TextBlock Text="{Binding SizingSummaryText}"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,10" />
+
+                                <TextBlock Text="Detected Windows Editions Inside ISO:"
+                                           FontWeight="SemiBold"
+                                           Margin="0,2,0,6" />
+                                <ItemsControl ItemsSource="{Binding IsoEditions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#0A101D"
+                                                    BorderBrush="#1E2D45"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="12,6"
+                                                    Margin="0,0,0,5">
+                                                <TextBlock TextWrapping="Wrap">
+                                                    <Run Text="Index " Foreground="#94A3B8" />
+                                                    <Run Text="{Binding Index, Mode=OneWay}" FontWeight="Bold" Foreground="#FFFFFF" />
+                                                    <Run Text="  •  " Foreground="#64748B" />
+                                                    <Run Text="{Binding Name, Mode=OneWay}" FontWeight="SemiBold" Foreground="#F1F5F9" />
+                                                    <Run Text="  (" Foreground="#94A3B8" />
+                                                    <Run Text="{Binding Architecture, Mode=OneWay}" Foreground="#38BDF8" FontWeight="SemiBold" />
+                                                    <Run Text=")" Foreground="#94A3B8" />
+                                                </TextBlock>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ============ STEP 3: PARTITION PLAN & SETUP CHEAT SHEET ============ -->
+                    <StackPanel Visibility="{Binding IsStep3, Converter={StaticResource BoolToVis}}">
+                        <!-- Empty-state guidance if user jumps to Step 3 before validating an ISO -->
+                        <Border Style="{StaticResource CardBorderStyle}"
+                                Visibility="{Binding HasSetupGuide, Converter={StaticResource BoolToVis}, ConverterParameter=Invert}">
+                            <StackPanel>
+                                <TextBlock Text="Select &amp; Validate a Windows 10 or 11 ISO in Step 2 First"
+                                           FontSize="15"
+                                           FontWeight="Bold"
+                                           Foreground="#38BDF8" />
+                                <TextBlock Text="Once you inspect a Windows 10 or Windows 11 ISO in Step 2, SWBI calculates the exact FAT32 'SWBI-SETUP' partition size and builds your personalized Disk &amp; Partition Cheat Sheet here."
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,12" />
+                                <Button Content="Go to Step 2 • Select Windows ISO"
+                                        Command="{Binding JumpToStepCommand}"
+                                        CommandParameter="2"
+                                        Style="{StaticResource PrimaryButtonStyle}"
+                                        HorizontalAlignment="Left" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Visual Before / After / During Setup Maps -->
+                        <Border Style="{StaticResource CardBorderStyle}">
+                            <StackPanel>
+                                <TextBlock Text="Step 3 — Visual Single-Drive Partition Plan (HDD, SATA SSD, NVMe, VMD &amp; eMMC)"
+                                           FontSize="15.5"
+                                           FontWeight="Bold" />
+                                <TextBlock Text="Why formatting or deleting old C: in Windows Setup works: the new FAT32 'SWBI-SETUP' partition is an independent GPT or MBR partition containing WinPE, split install.swm files, and your PC's exported storage/Wi-Fi drivers."
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="12.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,12" />
+
+                                <TextBlock Text="1. After Preparation (Before Reboot):" FontWeight="SemiBold" Foreground="#7DD3FC" Margin="0,0,0,6" />
+                                <ItemsControl ItemsSource="{Binding AfterPrepDiskSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{Binding SurfaceTintBrush}"
+                                                    BorderBrush="{Binding AccentBrush}"
+                                                    BorderThickness="1,3,1,1"
+                                                    Width="{Binding RelativeWidthPx}"
+                                                    MinWidth="140"
+                                                    CornerRadius="8"
+                                                    Padding="12,8"
+                                                    Margin="0,0,8,10">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" FontSize="12.5" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding Subtitle}" FontSize="11.5" Foreground="#E2E8F0" Margin="0,2,0,4" />
+                                                    <Border Background="#0A101D" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                                        <TextBlock Text="{Binding Badge}" FontSize="10" FontWeight="Bold" Foreground="#FDE68A" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <TextBlock Text="2. Inside Windows Setup (Clean Reinstall / Clean Downgrade: Delete Old C: -> Select Unallocated Space):"
+                                           FontWeight="SemiBold"
+                                           Foreground="#6EE7B7"
+                                           Margin="0,4,0,6" />
+                                <ItemsControl ItemsSource="{Binding SetupDeletedDiskSegments}">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="{Binding SurfaceTintBrush}"
+                                                    BorderBrush="{Binding AccentBrush}"
+                                                    BorderThickness="1,3,1,1"
+                                                    Width="{Binding RelativeWidthPx}"
+                                                    MinWidth="140"
+                                                    CornerRadius="8"
+                                                    Padding="12,8"
+                                                    Margin="0,0,8,4">
+                                                <StackPanel>
+                                                    <TextBlock Text="{Binding Title}" FontWeight="Bold" FontSize="12.5" Foreground="#FFFFFF" TextTrimming="CharacterEllipsis" />
+                                                    <TextBlock Text="{Binding Subtitle}" FontSize="11.5" Foreground="#E2E8F0" Margin="0,2,0,4" />
+                                                    <Border Background="#0A101D" CornerRadius="4" Padding="6,2" HorizontalAlignment="Left">
+                                                        <TextBlock Text="{Binding Badge}" FontSize="10" FontWeight="Bold" Foreground="#FDE68A" />
+                                                    </Border>
+                                                </StackPanel>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Exact Partition Cheat Sheet Table -->
+                        <Border Style="{StaticResource CardBorderStyle}"
+                                Margin="0"
+                                Visibility="{Binding HasSetupGuide, Converter={StaticResource BoolToVis}}">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,10">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                        <TextBlock Text="Windows Setup Partition Cheat Sheet (Photograph or Save Before Reboot!)"
+                                                   FontSize="15"
+                                                   FontWeight="Bold"
+                                                   Foreground="#FBBF24" />
+                                        <TextBlock Text="Drive letters inside Windows Setup (WinPE) often shift! Match partitions by Disk #, Size (GB), and Label 'SWBI-SETUP':"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   TextWrapping="Wrap"
+                                                   FontSize="12"
+                                                   Margin="0,2,0,0" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1"
+                                            Content="Save Cheat Sheet (.txt)"
+                                            Command="{Binding ExportCheatSheetCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            VerticalAlignment="Top" />
+                                </Grid>
+
+                                <ItemsControl ItemsSource="{Binding SetupGuideRows}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#0A101D"
+                                                    BorderBrush="{Binding Action, Converter={StaticResource SetupActionBrush}}"
+                                                    BorderThickness="3,1,1,1"
+                                                    CornerRadius="8"
+                                                    Padding="12,9"
+                                                    Margin="0,0,0,6">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="1.4*" MinWidth="150" />
+                                                        <ColumnDefinition Width="90" />
+                                                        <ColumnDefinition Width="120" />
+                                                        <ColumnDefinition Width="2.2*" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <TextBlock Grid.Column="0" Text="{Binding SetupName}" FontWeight="Bold" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="1" Text="{Binding SizeDisplay}" Foreground="#38BDF8" FontWeight="SemiBold" VerticalAlignment="Center" Margin="0,0,8,0" />
+                                                    <TextBlock Grid.Column="2" Text="{Binding TypeLabel}" Foreground="#CBD5E1" FontSize="12" VerticalAlignment="Center" TextWrapping="Wrap" Margin="0,0,8,0" />
+                                                    <StackPanel Grid.Column="3">
+                                                        <Border Background="{Binding Action, Converter={StaticResource SetupActionBrush}}"
+                                                                CornerRadius="5"
+                                                                Padding="9,3"
+                                                                HorizontalAlignment="Left">
+                                                            <TextBlock Text="{Binding ActionBadgeText}" FontWeight="Bold" FontSize="10.5" Foreground="#FFFFFF" />
+                                                        </Border>
+                                                        <TextBlock Text="{Binding Explanation}"
+                                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                                   FontSize="11.5"
+                                                                   TextWrapping="Wrap"
+                                                                   Margin="0,4,0,0" />
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <ItemsControl ItemsSource="{Binding CriticalSetupRules}" Margin="0,10,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <TextBlock Text="{Binding}"
+                                                       Foreground="#FDE68A"
+                                                       FontSize="12.5"
+                                                       Margin="0,3,0,3"
+                                                       TextWrapping="Wrap" />
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ============ STEP 4: CONFIRMATIONS & PREPARATION EXECUTION ============ -->
+                    <StackPanel Visibility="{Binding IsStep4, Converter={StaticResource BoolToVis}}">
+                        <Border Background="{StaticResource WarnSurfaceBrush}"
+                                BorderBrush="{StaticResource WarnBorderBrush}"
+                                BorderThickness="1.5"
+                                CornerRadius="10"
+                                Padding="16,14"
+                                Margin="0,0,0,12">
+                            <StackPanel>
+                                <Grid Margin="0,0,0,8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="Step 4 — Mandatory Data-Safety Confirmations Before Partitioning"
+                                                   FontSize="15.5"
+                                                   FontWeight="Bold"
+                                                   Foreground="#FDE68A" />
+                                        <TextBlock Text="{Binding ExecutionModeBadgeText}"
+                                                   FontWeight="Bold"
+                                                   FontSize="12.5"
+                                                   Foreground="#38BDF8"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+
+                                    <Border Grid.Column="1"
+                                            Background="#0A101D"
+                                            BorderBrush="#334155"
+                                            BorderThickness="1"
+                                            CornerRadius="8"
+                                            Padding="12,6"
+                                            VerticalAlignment="Top">
+                                        <CheckBox Content="Dry-Run Safety Mode (uncheck for Live Mode)"
+                                                  IsChecked="{Binding IsDryRunMode}"
+                                                  Style="{StaticResource PillToggleSwitchStyle}"
+                                                  Foreground="#7DD3FC" />
+                                    </Border>
+                                </Grid>
+
+                                <CheckBox Content="I have backed up important personal files to external storage or cloud backup."
+                                          IsChecked="{Binding ConfirmExternalBackup}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="I understand that deleting/formatting old C: in Windows Setup erases that partition (or keeping it creates C:\Windows.old)."
+                                          IsChecked="{Binding ConfirmWipeOldPartition}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+                                <CheckBox Content="I will NOT delete or format the 'SWBI-SETUP' partition or the ~100–260 MB EFI System Partition during Windows Setup."
+                                          IsChecked="{Binding ConfirmPreserveInstaller}"
+                                          Style="{StaticResource ModernCheckBoxStyle}" />
+
+                                <StackPanel Visibility="{Binding RequiresBitLockerConfirmation, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,6,0,0">
+                                    <CheckBox Content="BitLocker / Device Encryption Detected: I have saved my 48-digit BitLocker Recovery Key to my Microsoft Account or another device."
+                                              IsChecked="{Binding ConfirmBitLockerRecoveryKey}"
+                                              Foreground="#FCA5A5"
+                                              FontWeight="SemiBold"
+                                              Style="{StaticResource ModernCheckBoxStyle}" />
+                                    <CheckBox Content="Automatically suspend BitLocker protection on C: for 1 reboot cycle before shrinking."
+                                              IsChecked="{Binding AutoSuspendBitLocker}"
+                                              Style="{StaticResource ModernCheckBoxStyle}" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Progress & Start Card -->
+                        <Border Style="{StaticResource CardBorderStyle}" Margin="0">
+                            <StackPanel>
+                                <TextBlock Text="{Binding PreparationGateHintText}"
+                                           Foreground="#7DD3FC"
+                                           FontWeight="SemiBold"
+                                           FontSize="12.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,0,0,10" />
+
+                                <WrapPanel Orientation="Horizontal" Margin="0,0,0,14">
+                                    <Button Content="{Binding PreparationButtonLabel}"
+                                            Command="{Binding StartPreparationCommand}"
+                                            Style="{StaticResource PrimaryButtonStyle}"
+                                            Margin="0,0,10,4" />
+                                    <Button Content="Cancel Safe Stage"
+                                            Command="{Binding CancelOperationCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Margin="0,0,0,4" />
+                                </WrapPanel>
+
+                                <Grid Margin="0,0,0,6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding PrepStepTitle}" FontWeight="Bold" FontSize="13.5" />
+                                        <TextBlock Text="{Binding PrepStepDetail}"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   FontSize="12"
+                                                   Margin="0,2,0,0"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="1"
+                                               Text="{Binding PrepProgressPercent, StringFormat='{}{0}%', Mode=OneWay}"
+                                               FontSize="16"
+                                               FontWeight="Bold"
+                                               Foreground="#38BDF8"
+                                               VerticalAlignment="Bottom"
+                                               Margin="12,0,0,0" />
+                                </Grid>
+
+                                <ProgressBar Value="{Binding PrepProgressPercent, Mode=OneWay}"
+                                             Minimum="0"
+                                             Maximum="100"
+                                             Height="11"
+                                             Style="{StaticResource ModernProgressBarStyle}" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- ============ STEP 5: REBOOT INTO WINDOWS SETUP ============ -->
+                    <StackPanel Visibility="{Binding IsStep5, Converter={StaticResource BoolToVis}}">
+                        <Border Style="{StaticResource CardBorderStyle}" Margin="0">
+                            <StackPanel>
+                                <TextBlock Text="Step 5 — SWBI Self-Bootable Windows Installer Ready"
+                                           FontSize="16.5"
+                                           FontWeight="Bold"
+                                           Foreground="#34D399" />
+                                <TextBlock Text="{Binding LastPrepSummary}"
+                                           Foreground="#E2E8F0"
+                                           FontSize="13.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,6,0,12" />
+
+                                <TextBlock Text="Completed / Simulated SWBI Actions:" FontWeight="SemiBold" Margin="0,0,0,6" />
+                                <ItemsControl ItemsSource="{Binding LastPrepActions}">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Background="#0A101D"
+                                                    BorderBrush="#1E2D45"
+                                                    BorderThickness="1"
+                                                    CornerRadius="6"
+                                                    Padding="10,6"
+                                                    Margin="0,0,0,4">
+                                                <TextBlock Text="{Binding StringFormat='✓  {0}'}"
+                                                           Foreground="#A7F3D0"
+                                                           FontFamily="Consolas"
+                                                           FontSize="12"
+                                                           TextWrapping="Wrap" />
+                                            </Border>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <Border Background="#0A1324"
+                                        BorderBrush="#0284C7"
+                                        BorderThickness="1.5"
+                                        CornerRadius="8"
+                                        Padding="14"
+                                        Margin="0,12,0,14">
+                                    <StackPanel>
+                                        <TextBlock Text="Where You Will See SWBI During Reboot &amp; Windows Setup:"
+                                                   FontWeight="Bold"
+                                                   Foreground="#38BDF8" />
+                                        <TextBlock Text="1. One-Time Boot: UEFI uses BootNext; legacy BIOS uses Windows Boot Manager. Firmware may ignore or hide entries. Keep recovery media available if setup does not start."
+                                                   Margin="0,5,0,0"
+                                                   FontSize="12.5"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Text="2. Windows Setup Partition Chooser: Delete/format ONLY your shrunk old Windows partition (or select it without formatting to keep C:\Windows.old). NEVER delete 'SWBI-SETUP' or EFI!"
+                                                   Margin="0,4,0,0"
+                                                   FontSize="12.5"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Text="3. Windows Setup Driver Chooser ('Load Driver'): Drivers inside SWBI-SETUP\$WinPEDriver$ load automatically — or browse to 'SWBI-SETUP\SWBI - Self Windows Bootable Installer Drivers'."
+                                                   Margin="0,4,0,0"
+                                                   FontSize="12.5"
+                                                   TextWrapping="Wrap" />
+                                        <TextBlock Text="4. After Your New Windows Desktop Opens: Run SWBI again and open '2. Post-Install Cleanup' to remove 'SWBI-SETUP' and reclaim space into C:."
+                                                   Margin="0,4,0,0"
+                                                   FontSize="12.5"
+                                                   TextWrapping="Wrap" />
+                                    </StackPanel>
+                                </Border>
+
+                                <WrapPanel Orientation="Horizontal">
+                                    <Button Content="Save Partition Cheat Sheet (.txt)"
+                                            Command="{Binding ExportCheatSheetCommand}"
+                                            Style="{StaticResource SecondaryButtonStyle}"
+                                            Margin="0,0,12,4" />
+                                    <Button Content="Restart Now into SWBI - Self Windows Bootable Installer"
+                                            Command="{Binding RebootIntoSetupCommand}"
+                                            Style="{StaticResource DangerButtonStyle}"
+                                            Margin="0,0,0,4" />
+                                </WrapPanel>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                </Grid>
+            </ScrollViewer>
+
+            <!-- Wizard Bottom Navigation Bar -->
+            <Border Grid.Row="2"
+                    Background="{StaticResource BgSurfaceBrush}"
+                    BorderBrush="{StaticResource BorderSubtleBrush}"
+                    BorderThickness="0,1,0,0"
+                    Padding="18,9">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="Auto" />
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <Button Grid.Column="0"
+                            Content="←  Previous Step"
+                            Command="{Binding PreviousStepCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}" />
+                    <TextBlock Grid.Column="1"
+                               Text="{Binding BusyStatusText}"
+                               Foreground="#7DD3FC"
+                               FontWeight="Medium"
+                               VerticalAlignment="Center"
+                               Margin="16,0"
+                               TextTrimming="CharacterEllipsis" />
+                    <Button Grid.Column="2"
+                            Content="Next Step  →"
+                            Command="{Binding NextStepCommand}"
+                            Style="{StaticResource PrimaryButtonStyle}" />
+                </Grid>
+            </Border>
+        </Grid>
+
+        <!-- 2. POST-INSTALL CLEANUP VIEW -->
+        <!-- Outer Grid binds Visibility to MainViewModel.IsCleanupTabSelected before switching DataContext to CleanupVm -->
+        <Grid Grid.Row="1"
+              Visibility="{Binding IsCleanupTabSelected, Converter={StaticResource BoolToVis}}">
+            <ScrollViewer DataContext="{Binding CleanupVm}"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled"
+                          Padding="18,14">
+                <StackPanel>
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Grid.Column="0" Margin="0,0,12,0">
+                                <TextBlock Text="Post-Install SWBI Cleanup &amp; Disk Space Reclamation"
+                                           FontSize="16"
+                                           FontWeight="Bold" />
+                                <TextBlock Text="After your new Windows installation boots cleanly on its own, inspect and remove the temporary 'SWBI - Self Windows Bootable Installer' UEFI/BCD boot entries and 'SWBI-SETUP' partition."
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="12.5"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,6" />
+                                <TextBlock Text="{Binding StatusMessage}"
+                                           Foreground="#38BDF8"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button Grid.Column="1"
+                                    Content="↻  Inspect Post-Install State"
+                                    Command="{Binding InspectCommand}"
+                                    Style="{StaticResource SecondaryButtonStyle}"
+                                    VerticalAlignment="Top" />
+                        </Grid>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}">
+                        <StackPanel>
+                            <TextBlock Text="Cleanup Safety Verification Checks" FontWeight="SemiBold" FontSize="13.5" Margin="0,0,0,10" />
+                            <ItemsControl ItemsSource="{Binding SafetyChecks}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{Binding Severity, Converter={StaticResource SeveritySurfaceBrush}}"
+                                                BorderBrush="{Binding Severity, Converter={StaticResource SeverityBrush}}"
+                                                BorderThickness="3,1,1,1"
+                                                CornerRadius="8"
+                                                Padding="12,8"
+                                                Margin="0,0,0,6">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="86" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <Border Grid.Column="0"
+                                                        Background="{Binding Severity, Converter={StaticResource SeverityBrush}}"
+                                                        CornerRadius="5"
+                                                        Padding="7,3"
+                                                        HorizontalAlignment="Left"
+                                                        VerticalAlignment="Top">
+                                                    <TextBlock Text="{Binding Severity, Converter={StaticResource SeverityBadgeText}}"
+                                                               FontSize="10"
+                                                               FontWeight="Bold"
+                                                               Foreground="#070C17" />
+                                                </Border>
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="{Binding Title}" FontWeight="SemiBold" />
+                                                    <TextBlock Text="{Binding Summary}" Foreground="#CBD5E1" FontSize="12" TextWrapping="Wrap" Margin="0,2,0,0" />
+                                                    <TextBlock Text="{Binding RemediationHint}"
+                                                               Foreground="#FDE68A"
+                                                               FontSize="11.5"
+                                                               TextWrapping="Wrap"
+                                                               Margin="0,3,0,0"
+                                                               Visibility="{Binding RemediationHint, Converter={StaticResource NullToVis}}" />
+                                                </StackPanel>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}" Margin="0">
+                        <StackPanel>
+                            <TextBlock Text="Partition Adjacency &amp; Space Reclamation Plan" FontWeight="SemiBold" FontSize="13.5" />
+                            <TextBlock Text="{Binding AdjacencySummary}"
+                                       Foreground="#CBD5E1"
+                                       FontSize="12.5"
+                                       TextWrapping="Wrap"
+                                       Margin="0,6,0,10" />
+
+                            <CheckBox Content="Automatically extend C: into reclaimed space (only enabled when 'SWBI-SETUP' is immediately right-adjacent to C:)"
+                                      IsChecked="{Binding ExtendOsIfAdjacent}"
+                                      IsEnabled="{Binding CanExtendOsDirectly}"
+                                      Style="{StaticResource ModernCheckBoxStyle}" />
+
+                            <CheckBox Content="I confirm my new Windows installation boots normally into the desktop without needing SWBI Setup."
+                                      IsChecked="{Binding ConfirmedIndependentBoot}"
+                                      Style="{StaticResource ModernCheckBoxStyle}" />
+
+                            <Button Content="Remove SWBI Boot Entries &amp; Reclaim Partition"
+                                    Command="{Binding ExecuteCleanupCommand}"
+                                    Style="{StaticResource PrimaryButtonStyle}"
+                                    HorizontalAlignment="Left"
+                                    Margin="0,10,0,0" />
+
+                            <Border Background="#06281E"
+                                    BorderBrush="#10B981"
+                                    BorderThickness="1"
+                                    CornerRadius="8"
+                                    Padding="12,8"
+                                    Margin="0,12,0,0"
+                                    Visibility="{Binding LastCleanupSummary, Converter={StaticResource NullToVis}}">
+                                <TextBlock Text="{Binding LastCleanupSummary}"
+                                           Foreground="#6EE7B7"
+                                           FontWeight="SemiBold"
+                                           TextWrapping="Wrap" />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- ==================== SLEEK COMPACT LIVE KERNEL & BOOT CONSOLE DRAWER ==================== -->
+        <Border Grid.Row="2"
+                Background="#060A13"
+                BorderBrush="#1B273D"
+                BorderThickness="0,1,0,0"
+                Padding="16,5">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <Expander Grid.Column="0"
+                          IsExpanded="{Binding IsLogExpanded}"
+                          Style="{StaticResource ModernLogExpanderStyle}">
+                    <Expander.Header>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0"
+                                       Text="Live Kernel, Storage &amp; Boot Console"
+                                       FontSize="12"
+                                       FontWeight="SemiBold"
+                                       Foreground="#CBD5E1"
+                                       VerticalAlignment="Center" />
+                            <Border Grid.Column="1"
+                                    Background="#111C33"
+                                    CornerRadius="4"
+                                    Padding="6,1"
+                                    Margin="8,0,10,0"
+                                    VerticalAlignment="Center">
+                                <TextBlock Text="{Binding LogCountBadgeText, Mode=OneWay}"
+                                           FontSize="10"
+                                           FontWeight="SemiBold"
+                                           Foreground="#38BDF8" />
+                            </Border>
+                            <TextBlock Grid.Column="2"
+                                       Text="{Binding LatestLogLineText, Mode=OneWay}"
+                                       FontFamily="Consolas"
+                                       FontSize="11"
+                                       Foreground="#64748B"
+                                       TextTrimming="CharacterEllipsis"
+                                       VerticalAlignment="Center"
+                                       Margin="0,0,10,0" />
+                        </Grid>
+                    </Expander.Header>
+
+                    <Grid Height="130" Margin="0,6,0,2">
+                        <ListBox ItemsSource="{Binding LogLines}"
+                                 Style="{StaticResource ModernLogListBoxStyle}" />
+                    </Grid>
+                </Expander>
+
+                <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top" Margin="8,1,0,0">
+                    <Button Content="Copy Log"
+                            Command="{Binding CopyLogsCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Padding="10,3"
+                            FontSize="11"
+                            Margin="0,0,6,0" />
+                    <Button Content="Open Folder"
+                            Command="{Binding OpenLogFolderCommand}"
+                            Style="{StaticResource SecondaryButtonStyle}"
+                            Padding="10,3"
+                            FontSize="11" />
+                </StackPanel>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

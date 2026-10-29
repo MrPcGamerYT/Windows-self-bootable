@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <PublishAot>true</PublishAot>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <OptimizationPreference>Size</OptimizationPreference>
+    <StackTraceSupport>false</StackTraceSupport>
+    <ApplicationManifest>launcher.manifest</ApplicationManifest>
+    <ApplicationIcon>..\UsbFreeInstaller.App\Assets\swbi.ico</ApplicationIcon>
+    <AssemblyName>SWBI-SelfWindowsBootableInstaller</AssemblyName>
+    <Product>SWBI - Self Windows Bootable Installer</Product>
+    <Title>SWBI — Self Windows Bootable Installer</Title>
+    <Description>SWBI Native Win32 Bootstrapper (100% immune to broken %TEMP% / 8.3 short paths and broken UAC)</Description>
+    <Version>1.0.1</Version>
+    <Authors>MrPcGamerYT &amp; SWBI Contributors</Authors>
+    <Company>SWBI Project</Company>
+    <Copyright>Copyright (c) 2026 MrPcGamerYT &amp; SWBI Contributors</Copyright>
+    <RepositoryUrl>https://github.com/MrPcGamerYT/Windows-self-bootable.git</RepositoryUrl>
+  </PropertyGroup>
+
+  <ItemGroup Condition="'$(SwbiPayloadZip)' != '' and Exists('$(SwbiPayloadZip)')">
+    <EmbeddedResource Include="$(SwbiPayloadZip)" LogicalName="SWBI.Payload.zip" />
+  </ItemGroup>
+
+</Project>

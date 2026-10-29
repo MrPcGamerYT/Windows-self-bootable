@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
+    <RootNamespace>UsbFreeInstaller.Core</RootNamespace>
+    <AssemblyName>UsbFreeInstaller.Core</AssemblyName>
+    <Version>1.0.1</Version>
+    <Authors>MrPcGamerYT &amp; SWBI Contributors</Authors>
+    <Company>SWBI Project</Company>
+    <Copyright>Copyright (c) 2026 MrPcGamerYT &amp; SWBI Contributors</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/MrPcGamerYT/Windows-self-bootable</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/MrPcGamerYT/Windows-self-bootable.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <Product>SWBI - Self Windows Bootable Installer</Product>
+    <Description>Core inspection, smart PC compatibility, universal drive tuning, FAT32 WIM splitting, UEFI/BCD boot chooser provisioning, driver harvesting, and post-install cleanup engine for SWBI — Self Windows Bootable Installer.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\swbi.ico" LogicalName="UsbFreeInstaller.Core.Resources.swbi.ico" />
+  </ItemGroup>
+
+</Project>
