@@ -1,0 +1,45 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.8.34330.188
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UsbFreeInstaller.Core", "src\UsbFreeInstaller.Core\UsbFreeInstaller.Core.csproj", "{A1407F6B-5D48-4C31-9B10-1E9A00000001}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UsbFreeInstaller.App", "src\UsbFreeInstaller.App\UsbFreeInstaller.App.csproj", "{A1407F6B-5D48-4C31-9B10-1E9A00000002}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UsbFreeInstaller.Launcher", "src\UsbFreeInstaller.Launcher\UsbFreeInstaller.Launcher.csproj", "{A1407F6B-5D48-4C31-9B10-1E9A00000005}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UsbFreeInstaller.Core.Tests", "tests\UsbFreeInstaller.Core.Tests\UsbFreeInstaller.Core.Tests.csproj", "{A1407F6B-5D48-4C31-9B10-1E9A00000003}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "UsbFreeInstaller.App.Tests", "tests\UsbFreeInstaller.App.Tests\UsbFreeInstaller.App.Tests.csproj", "{A1407F6B-5D48-4C31-9B10-1E9A00000004}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A1407F6B-5D48-4C31-9B10-1E9A00000001}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000001}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000001}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000001}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000002}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000002}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000002}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000002}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000005}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000005}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000005}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000005}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000003}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000003}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000003}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000003}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000004}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000004}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000004}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A1407F6B-5D48-4C31-9B10-1E9A00000004}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+EndGlobal
