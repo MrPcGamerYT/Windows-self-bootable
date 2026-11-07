@@ -28,7 +28,8 @@ public sealed record DriverHarvestSummary(
     int StorageDriverInfCount,
     int NetworkDriverInfCount,
     long TotalExportedBytes,
-    bool InjectedIntoBootWim);
+    bool InjectedIntoBootWim,
+    bool ActiveStorageDriverStaged = false);
 
 public interface IDriverHarvesterService
 {
@@ -37,7 +38,8 @@ public interface IDriverHarvesterService
         bool includeNetworkDrivers,
         bool injectStorageIntoBootWim,
         IProgress<DeploymentProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? activeControllerServiceName = null);
 
     Task LaunchInPlaceUpgradeSetupAsync(
         string installerDriveLetter,

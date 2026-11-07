@@ -6,22 +6,18 @@ namespace UsbFreeInstaller.Core.Services;
 
 internal interface IBootProvisioningBackend
 {
-    string RegisterUefi(string installerDriveLetter, ISafeLogger logger);
     bool BackupSystemBcd(string path, ISafeLogger logger);
     ActiveBcdState InspectSystemBcd();
-    (string SdiGuid, string LoaderGuid) RegisterLegacyBcd(string installerDriveLetter, ISafeLogger logger);
+    (string SdiGuid, string LoaderGuid) RegisterRamdiskBcd(string installerDriveLetter, FirmwareMode firmwareMode, ISafeLogger logger);
 }
 
 internal sealed class NativeBootProvisioningBackend : IBootProvisioningBackend
 {
-    public string RegisterUefi(string drive, ISafeLogger logger) =>
-        NativeUefiAndBcdRegistryEngine.ProvisionUefiNvramBootEntry(drive, logger);
-
     public bool BackupSystemBcd(string path, ISafeLogger logger) =>
         NativeUefiAndBcdRegistryEngine.TryExportSystemBcdBackup(path, logger);
 
     public ActiveBcdState InspectSystemBcd() => NativeUefiAndBcdRegistryEngine.InspectSystemBcdFromRegistry();
 
-    public (string SdiGuid, string LoaderGuid) RegisterLegacyBcd(string drive, ISafeLogger logger) =>
-        NativeUefiAndBcdRegistryEngine.ProvisionSystemBcdInRegistry(drive, FirmwareMode.LegacyBios, logger);
+    public (string SdiGuid, string LoaderGuid) RegisterRamdiskBcd(string drive, FirmwareMode mode, ISafeLogger logger) =>
+        NativeUefiAndBcdRegistryEngine.ProvisionSystemBcdInRegistry(drive, mode, logger);
 }

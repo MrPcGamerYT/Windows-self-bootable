@@ -1043,6 +1043,16 @@
                                            FontSize="13.5"
                                            TextWrapping="Wrap"
                                            Margin="0,6,0,12" />
+                                <Border Background="#3F2910" BorderBrush="#F59E0B" BorderThickness="2"
+                                        CornerRadius="8" Padding="12" Margin="0,0,0,12"
+                                        Visibility="{Binding HasStorageDriverWarning, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel>
+                                        <TextBlock Text="WARNING — Windows Setup may not detect the internal disk"
+                                                   Foreground="#FBBF24" FontWeight="Bold" FontSize="14" />
+                                        <TextBlock Text="{Binding StorageDriverWarning}" Foreground="#FEF3C7"
+                                                   FontSize="12.5" TextWrapping="Wrap" Margin="0,6,0,0" />
+                                    </StackPanel>
+                                </Border>
 
                                 <TextBlock Text="Completed / Simulated SWBI Actions:" FontWeight="SemiBold" Margin="0,0,0,6" />
                                 <ItemsControl ItemsSource="{Binding LastPrepActions}">
@@ -1074,7 +1084,7 @@
                                         <TextBlock Text="Where You Will See SWBI During Reboot &amp; Windows Setup:"
                                                    FontWeight="Bold"
                                                    Foreground="#38BDF8" />
-                                        <TextBlock Text="1. One-Time Boot: UEFI uses BootNext; legacy BIOS uses Windows Boot Manager. Firmware may ignore or hide entries. Keep recovery media available if setup does not start."
+                                        <TextBlock Text="1. One-Time Boot: UEFI and legacy BIOS use your existing Windows Boot Manager's one-time WinPE boot sequence. The BCD is backed up first; no EFI System Partition files are replaced. Keep recovery media available if setup does not start."
                                                    Margin="0,5,0,0"
                                                    FontSize="12.5"
                                                    TextWrapping="Wrap" />
@@ -1082,7 +1092,7 @@
                                                    Margin="0,4,0,0"
                                                    FontSize="12.5"
                                                    TextWrapping="Wrap" />
-                                        <TextBlock Text="3. Windows Setup Driver Chooser ('Load Driver'): Drivers inside SWBI-SETUP\$WinPEDriver$ load automatically — or browse to 'SWBI-SETUP\SWBI - Self Windows Bootable Installer Drivers'."
+                                        <TextBlock Text="3. Windows Setup Driver Chooser ('Load Driver'): Staged drivers may load automatically. If no disks appear, stop and browse to 'SWBI-SETUP\SWBI - Self Windows Bootable Installer Drivers\Storage' or use a matching vendor F6 driver; never guess which partition to delete."
                                                    Margin="0,4,0,0"
                                                    FontSize="12.5"
                                                    TextWrapping="Wrap" />

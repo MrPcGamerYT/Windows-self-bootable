@@ -469,6 +469,8 @@ public sealed class MainViewModel : ObservableObject
             {
                 ReplaceCollection(LastPrepActions, value?.PlannedOrExecutedActions ?? Array.Empty<string>());
                 OnPropertyChanged(nameof(LastPrepSummary));
+                OnPropertyChanged(nameof(StorageDriverWarning));
+                OnPropertyChanged(nameof(HasStorageDriverWarning));
                 RebootIntoSetupCommand.NotifyCanExecuteChanged();
                 NextStepCommand.NotifyCanExecuteChanged();
             }
@@ -477,6 +479,8 @@ public sealed class MainViewModel : ObservableObject
 
     public string LastPrepSummary =>
         LastPreparationResult?.Summary ?? "Complete Step 4 first to prepare your SWBI self-bootable partition (or run a Dry-Run simulation).";
+    public string StorageDriverWarning => LastPreparationResult?.StorageDriverWarning ?? string.Empty;
+    public bool HasStorageDriverWarning => !string.IsNullOrWhiteSpace(StorageDriverWarning);
 
     public string PreparationGateHintText
     {
@@ -1172,8 +1176,9 @@ public sealed class MainViewModel : ObservableObject
         {
             MessageBoxResult answer = MessageBox.Show(
                 $"Your PC will restart into '{SwbiBrand.BootChooserEntryName}' in 5 seconds.\n\n" +
+                (HasStorageDriverWarning ? "STORAGE DRIVER WARNING: " + StorageDriverWarning + "\n\n" : string.Empty) +
                 "REMEMBER IN WINDOWS SETUP:\n" +
-                $"• Boot Chooser (if opened via F12/F8): '{SwbiBrand.BootChooserEntryName}'\n" +
+                $"• One-time Windows Boot Manager entry: '{SwbiBrand.BootChooserEntryName}' (not the F12 firmware menu).\n" +
                 "• Delete or format ONLY your shrunk old Windows partition (or select it without formatting if keeping Windows.old).\n" +
                 $"• DO NOT delete '{SwbiBrand.PartitionVolumeLabel}' or the EFI/System partition!\n" +
                 $"• If prompted for drivers, browse to '{SwbiBrand.PartitionVolumeLabel}\\{SwbiBrand.DriverChooserFolderName}'.\n\n" +

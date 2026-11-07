@@ -29,7 +29,8 @@ public sealed class WindowsDriverHarvesterService : IDriverHarvesterService
         bool includeNetworkDrivers,
         bool injectStorageIntoBootWim,
         IProgress<DeploymentProgress>? progress = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        string? activeControllerServiceName = null)
     {
         string cleanLetter = installerDriveLetter.TrimEnd(':', '\\', '/');
         string rootDir = $"{cleanLetter}:{Path.DirectorySeparatorChar}";
@@ -69,7 +70,7 @@ public sealed class WindowsDriverHarvesterService : IDriverHarvesterService
             storageCount = NativeDriverStoreScanner.ExportBootCriticalStorageDrivers(
                 driverStoreRepo,
                 new[] { storageOutDir, swbiChooserStorageDir },
-                activeControllerServiceName: null,
+                activeControllerServiceName,
                 _logger);
 
             if (includeNetworkDrivers)
@@ -84,9 +85,16 @@ public sealed class WindowsDriverHarvesterService : IDriverHarvesterService
         await WriteSwbiDriverReadMeAsync(swbiChooserDriverRoot, storageCount, netCount, cancellationToken).ConfigureAwait(false);
 
         long exportedBytes = ComputeDirectoryTotalBytes(winPeDriverRoot);
+        string? activeDriverInf = NativeDriverStoreScanner.FindActiveStorageDriverInf(
+            storageOutDir, activeControllerServiceName);
+        bool activeDriverStaged = activeDriverInf is not null;
+        if (injectStorageIntoBootWim && !activeDriverStaged && !string.IsNullOrWhiteSpace(activeControllerServiceName))
+            _logger.Warn("NativeDrivers", $"The active controller service '{activeControllerServiceName}' has no verified INF + SYS package in the exported drivers. " +
+                "Other OEM packages cannot guarantee that Windows Setup will see this disk.");
         bool injectedBootWim = false;
 
-        if (injectStorageIntoBootWim && storageCount > 0 && OperatingSystem.IsWindows())
+        if (injectStorageIntoBootWim && storageCount > 0 && OperatingSystem.IsWindows() &&
+            (string.IsNullOrWhiteSpace(activeControllerServiceName) || activeDriverStaged))
         {
             progress?.Report(new DeploymentProgress(
                 "SWBI: Staging Storage Drivers in WinPE boot.wim",
@@ -99,7 +107,8 @@ public sealed class WindowsDriverHarvesterService : IDriverHarvesterService
                     bootWimPath,
                     applyWin11HardwareBypass: false,
                     storageDriversSourceDir: storageOutDir,
-                    _logger),
+                    _logger,
+                    requiredDriverInfPath: activeDriverInf),
                 cancellationToken).ConfigureAwait(false);
         }
 
@@ -108,7 +117,7 @@ public sealed class WindowsDriverHarvesterService : IDriverHarvesterService
             100,
             $"Exported {storageCount} storage + {netCount} network OEM package(s) ({ByteFormatting.FormatGb(exportedBytes)})."));
 
-        return new DriverHarvestSummary(storageCount, netCount, exportedBytes, injectedBootWim);
+        return new DriverHarvestSummary(storageCount, netCount, exportedBytes, injectedBootWim, activeDriverStaged);
     }
 
     public Task LaunchInPlaceUpgradeSetupAsync(

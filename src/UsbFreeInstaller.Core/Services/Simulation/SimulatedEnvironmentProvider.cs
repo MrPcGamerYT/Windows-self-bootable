@@ -408,7 +408,9 @@ public static class SimulatedEnvironmentProvider
             VolumeLabel = SwbiBrand.PartitionVolumeLabel,
             SplitStrategy = WimSplitStrategy.SplitWimToSwm,
             BootFirmwareMode = FirmwareMode.Uefi,
-            BcdFirmwareBootGuid = "UEFI:Boot0010"
+            BcdOsLoaderGuid = "{33333333-3333-4333-8333-333333333333}",
+            BcdSdiDeviceGuid = "{44444444-4444-4444-8444-444444444444}",
+            BcdBackupPath = @"C:\ProgramData\SWBI\BcdBackups\simulated.bcd"
         };
 
         var env = new SystemEnvironmentSnapshot

@@ -47,17 +47,15 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
         FirmwareMode firmwareMode)
     {
         string cleanLetter = installerDriveLetter.TrimEnd(':', '\\', '/').ToUpperInvariant();
-        if (firmwareMode == FirmwareMode.Uefi)
-        {
-            // A UEFI run never modifies either BCD store or the host's bootmgfw.efi.
-            string firmwareId = _backend.RegisterUefi(cleanLetter, _logger);
-            return new BcdProvisionResult(null, null, null, firmwareId);
-        }
-
-        if (firmwareMode != FirmwareMode.LegacyBios)
+        if (firmwareMode is not (FirmwareMode.Uefi or FirmwareMode.LegacyBios))
         {
             throw new InvalidOperationException("Firmware mode is unknown; refusing to choose a boot mechanism.");
         }
+
+        // A BootNext entry pointing to an EFI file on a GPT Basic Data partition is not reliably
+        // bootable on real firmware: many machines only load EFI programs from an ESP. Use the
+        // *existing* Windows Boot Manager on both UEFI and BIOS, with a one-time BCD ramdisk
+        // sequence. We never replace the host ESP boot manager or modify the ISO's local BCD.
 
         string safeBackupDir = !string.IsNullOrWhiteSpace(backupDirectory)
             ? backupDirectory
@@ -68,16 +66,17 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
 
         if (!_backend.BackupSystemBcd(backupPath, _logger))
         {
-            throw new InvalidOperationException("Unable to back up the system BCD; refusing to change the legacy boot configuration.");
+            throw new InvalidOperationException("Unable to back up the active system BCD; refusing to change the boot configuration.");
         }
 
         ActiveBcdState priorState = _backend.InspectSystemBcd();
-        if (priorState.ExistingUsbFreeLoaderGuid is not null || priorState.ExistingUsbFreeSdiGuid is not null)
+        if (priorState.ExistingUsbFreeLoaderGuid is not null || priorState.ExistingUsbFreeSdiGuid is not null ||
+            priorState.ExistingFirmwareBootGuid is not null)
         {
-            throw new InvalidOperationException("Existing SWBI BCD entries must be inspected and cleaned up before preparing another legacy boot.");
+            throw new InvalidOperationException("Existing SWBI boot entries must be inspected and cleaned up before preparing another boot.");
         }
 
-        (string sdiGuid, string loaderGuid) = _backend.RegisterLegacyBcd(cleanLetter, _logger);
+        (string sdiGuid, string loaderGuid) = _backend.RegisterRamdiskBcd(cleanLetter, firmwareMode, _logger);
         // Return the identifiers before any further work that could throw.
         return new BcdProvisionResult(backupPath, sdiGuid, loaderGuid, null);
     }

@@ -120,6 +120,7 @@ public sealed class PreparationOrchestrator
 
         CreatedInstallerPartitionInfo? createdPartition = null;
         BcdProvisionResult? createdBcd = null;
+        string? storageDriverWarning = null;
 
         try
         {
@@ -195,12 +196,33 @@ public sealed class PreparationOrchestrator
                     includeNetworkDrivers: options.ExportHostStorageAndNetworkDrivers,
                     injectStorageIntoBootWim: options.InjectBootCriticalStorageDriversIntoBootWim,
                     progress: drvProgress,
-                    cancellationToken: cancellationToken).ConfigureAwait(false);
+                    cancellationToken: cancellationToken,
+                    activeControllerServiceName: targetDisk.ControllerServiceName).ConfigureAwait(false);
 
                 exportedDrivers = (harvest.StorageDriverInfCount + harvest.NetworkDriverInfCount) > 0;
                 injectedBootWim = harvest.InjectedIntoBootWim;
                 executedActions.Add(
-                    $"Exported {harvest.StorageDriverInfCount} storage/chipset + {harvest.NetworkDriverInfCount} Wi-Fi/Ethernet driver package(s) to $WinPEDriver$ and '{createdPartition.DriveLetter}:\\{SwbiBrand.DriverChooserFolderName}' (boot.wim injected: {injectedBootWim}).");
+                    $"Exported {harvest.StorageDriverInfCount} storage/chipset + {harvest.NetworkDriverInfCount} Wi-Fi/Ethernet driver package(s) to $WinPEDriver$ and '{createdPartition.DriveLetter}:\\{SwbiBrand.DriverChooserFolderName}' " +
+                    $"(active controller package found: {harvest.ActiveStorageDriverStaged}; boot.wim injected: {injectedBootWim}).");
+                if (options.InjectBootCriticalStorageDriversIntoBootWim &&
+                    (!harvest.ActiveStorageDriverStaged || !injectedBootWim))
+                {
+                    storageDriverWarning = $"Windows Setup may NOT detect the internal disk ({targetDisk.ControllerServiceName}). " +
+                        (harvest.ActiveStorageDriverStaged
+                            ? $"Automatic WinPE injection did not verify. Use Setup's Load driver button and browse {SwbiBrand.PartitionVolumeLabel}\\{SwbiBrand.DriverChooserFolderName}\\Storage."
+                            : "SWBI could not verify the active controller's INF + SYS driver package; obtain the correct vendor F6 storage driver before rebooting.");
+                    _logger.Warn("Orchestrator", storageDriverWarning);
+                    executedActions.Add("WARNING: " + storageDriverWarning);
+                }
+            }
+
+            if ((options.InjectBootCriticalStorageDriversIntoBootWim || drivePlan.AutoInjectDriversIntoBootWim) &&
+                !injectedBootWim && storageDriverWarning is null)
+            {
+                storageDriverWarning = "Automatic storage driver injection was not performed. " +
+                    "If Windows Setup cannot see the disk, use Load driver with a matching vendor F6 driver; do not delete any partition you cannot identify.";
+                _logger.Warn("Orchestrator", storageDriverWarning);
+                executedActions.Add("WARNING: " + storageDriverWarning);
             }
 
             // Step 6: Verify boot.wim, boot.sdi, EFI bootloader, and install.wim/.swm/.esd BEFORE modifying BCD
@@ -238,9 +260,9 @@ public sealed class PreparationOrchestrator
                 effectiveBootMode,
                 cancellationToken).ConfigureAwait(false);
 
-            executedActions.Add(effectiveBootMode == FirmwareMode.Uefi
-                ? $"Registered '{SwbiBrand.BootChooserEntryName}' in UEFI firmware ({createdBcd.FirmwareBootGuid}); host BCD was not modified."
-                : $"Registered legacy Windows Boot Manager entry {createdBcd.OsLoaderGuid} (BCD backup: '{createdBcd.BcdBackupFilePath}').");
+            executedActions.Add($"Backed up the active system BCD to '{createdBcd.BcdBackupFilePath}' and registered " +
+                $"one-time {effectiveBootMode} Windows Boot Manager ramdisk entry {createdBcd.OsLoaderGuid}; " +
+                "the host ESP and the installer's standalone BCD were not modified.");
 
             var manifest = new InstallerManifest
             {
@@ -328,10 +350,12 @@ public sealed class PreparationOrchestrator
                 Succeeded = true,
                 Mode = ExecutionMode.Live,
                 Summary =
-                    $"Prepared {ByteFormatting.FormatGb(createdPartition.SizeBytes)} '{SwbiBrand.PartitionVolumeLabel}' ({createdPartition.DriveLetter}: on {targetDisk.DriveKindDisplay}) and registered '{SwbiBrand.BootChooserEntryName}' in boot choosers for {freshReport.Compatibility?.TransitionHeadline ?? "Windows Setup"}.",
+                    $"Prepared {ByteFormatting.FormatGb(createdPartition.SizeBytes)} '{SwbiBrand.PartitionVolumeLabel}' ({createdPartition.DriveLetter}: on {targetDisk.DriveKindDisplay}) and registered a one-time Windows Boot Manager entry for {freshReport.Compatibility?.TransitionHeadline ?? "Windows Setup"}." +
+                    (storageDriverWarning is null ? string.Empty : " WARNING: " + storageDriverWarning),
                 CreatedManifest = manifest,
                 SetupGuide = guide,
                 LogFilePath = _logger.LogFilePath,
+                StorageDriverWarning = storageDriverWarning,
                 PlannedOrExecutedActions = executedActions
             };
         }
@@ -344,7 +368,8 @@ public sealed class PreparationOrchestrator
                 executedActions.Add("Kept the installer partition because boot-configuration cleanup could not be verified.");
             }
             await RollbackFailedPreparationAsync(createdBcd, keepPartition ? null : createdPartition,
-                targetDisk.DiskNumber, targetOsPart.PartitionNumber, executedActions).ConfigureAwait(false);
+                targetDisk.DiskNumber, targetOsPart.PartitionNumber, targetOsPart.OffsetBytes,
+                executedActions).ConfigureAwait(false);
 
             Report(progress, totalSteps, totalSteps, "Preparation stopped; inspect cleanup status",
                 ex.Message, 100, PreparationStepState.Failed);
@@ -425,14 +450,13 @@ public sealed class PreparationOrchestrator
         }
 
         string bootPlan = env.Firmware == FirmwareMode.Uefi
-            ? "UEFI BootNext points to the installer's EFI loader; host BCD is not modified."
-            : "Legacy Windows Boot Manager uses a backed-up BCD and one-time boot sequence.";
+            ? "The existing UEFI Windows Boot Manager uses a backed-up BCD and one-time WinPE ramdisk sequence."
+            : "Legacy Windows Boot Manager uses a backed-up BCD and one-time WinPE ramdisk sequence.";
         Report(progress, 6, totalSteps, "[Dry-Run] Simulating firmware-specific boot registration", bootPlan, 85, PreparationStepState.SkippedDryRun);
         await Task.Delay(100, cancellationToken).ConfigureAwait(false);
         planned.Add("[Dry-Run] Pure C# binary WIM/SWM verification on boot\\boot.sdi, sources\\boot.wim, EFI bootloaders, and spanned SWM GUID/part headers.");
-        planned.Add(env.Firmware == FirmwareMode.Uefi
-            ? $"[Dry-Run] Register UEFI BootXXXX + BootOrder + BootNext for '{SwbiBrand.BootChooserEntryName}'; no host or standalone BCD writes."
-            : $"[Dry-Run] Back up the system BCD and create one legacy Windows Boot Manager entry for '{SwbiBrand.BootChooserEntryName}'.");
+        planned.Add($"[Dry-Run] Back up the active system BCD and create one {env.Firmware} Windows Boot Manager ramdisk entry " +
+            $"for '{SwbiBrand.BootChooserEntryName}' (one-time bootsequence); no ESP or installer BCD writes.");
         planned.Add($"[Dry-Run] Write W:\\{SwbiBrand.ManifestFileName} for post-install cleanup verification.");
 
         if (options.WorkflowChoice == InstallWorkflowChoice.InPlaceUpgradeKeepAppsAndFiles)
@@ -459,9 +483,9 @@ public sealed class PreparationOrchestrator
             VolumeLabel = SwbiBrand.PartitionVolumeLabel,
             SplitStrategy = iso.SplitStrategy,
             BootFirmwareMode = env.Firmware,
-            BcdOsLoaderGuid = env.Firmware == FirmwareMode.LegacyBios ? "{00000000-0000-0000-0000-000000000002}" : null,
-            BcdSdiDeviceGuid = env.Firmware == FirmwareMode.LegacyBios ? "{00000000-0000-0000-0000-000000000003}" : null,
-            BcdFirmwareBootGuid = env.Firmware == FirmwareMode.Uefi ? "UEFI:Boot0010" : null
+            BcdOsLoaderGuid = "{00000000-0000-0000-0000-000000000002}",
+            BcdSdiDeviceGuid = "{00000000-0000-0000-0000-000000000003}",
+            BcdFirmwareBootGuid = null
         };
 
         foreach (string item in planned)
@@ -489,6 +513,7 @@ public sealed class PreparationOrchestrator
         CreatedInstallerPartitionInfo? createdPartition,
         int diskNumber,
         int osPartitionNumber,
+        long osPartitionOffsetBytes,
         List<string> executedActions)
     {
         bool bootCleanupSucceeded = true;
@@ -525,7 +550,8 @@ public sealed class PreparationOrchestrator
                 await _partitionService.ExtendOsPartitionIntoReclaimedSpaceAsync(
                     diskNumber,
                     osPartitionNumber,
-                    CancellationToken.None).ConfigureAwait(false);
+                    CancellationToken.None,
+                    osPartitionOffsetBytes).ConfigureAwait(false);
                 executedActions.Add("Attempted to extend the OS partition into the reclaimed space.");
             }
             catch (Exception partEx)

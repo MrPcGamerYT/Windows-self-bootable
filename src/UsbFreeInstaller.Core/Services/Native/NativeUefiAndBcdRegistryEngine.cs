@@ -176,17 +176,18 @@ public static class NativeUefiAndBcdRegistryEngine
     }
 
     /// <summary>
-    /// Provisions the legacy BIOS boot entry in the system BCD without invoking bcdedit.exe.
-    /// UEFI uses the standalone installer boot path and must not call this method.
+    /// Provisions a one-time WinPE ramdisk in the already-active Windows Boot Manager BCD.
+    /// On UEFI this uses winload.efi; on legacy BIOS it uses winload.exe. Neither path
+    /// replaces the host boot manager or writes to the installer's standalone BCD.
     /// </summary>
     public static (string SdiGuid, string LoaderGuid) ProvisionSystemBcdInRegistry(
         string installerDriveLetter,
         FirmwareMode firmwareMode,
         ISafeLogger logger)
     {
-        if (firmwareMode != FirmwareMode.LegacyBios)
+        if (firmwareMode is not (FirmwareMode.Uefi or FirmwareMode.LegacyBios))
         {
-            throw new InvalidOperationException("System BCD provisioning is restricted to legacy BIOS; UEFI uses only firmware BootNext.");
+            throw new InvalidOperationException("Cannot provision BCD without a known firmware mode.");
         }
         if (!OperatingSystem.IsWindows())
         {
@@ -256,16 +257,35 @@ public static class NativeUefiAndBcdRegistryEngine
             SetMultiSzElement(hObjects, BootMgrObjectGuid, ElemBootSequence, new[] { loaderGuid });
 
             int flushError = Win32StorageInterop.RegFlushKey(hObjects);
-            if (flushError != 0) throw new System.ComponentModel.Win32Exception(flushError, "Failed to flush the legacy BCD hive.");
-            logger.Info("NativeBCD", $"Provisioned '{SwbiBrand.BootChooserEntryName}' ({loaderGuid}) directly in HKLM\\BCD00000000.");
+            if (flushError != 0) throw new System.ComponentModel.Win32Exception(flushError, "Failed to flush the system BCD hive.");
+            VerifyOneTimeBootSequence(hObjects, loaderGuid);
+            logger.Info("NativeBCD", $"Provisioned '{SwbiBrand.BootChooserEntryName}' ({loaderGuid}, {firmwareMode}) directly in HKLM\\BCD00000000 with a verified one-time boot sequence.");
             return (sdiGuid, loaderGuid);
         }
         catch (Exception error)
         {
             // Raw BCD writes can fail midway. Do not delete the partition or claim rollback succeeded.
             throw new FirmwareBootProvisionException(
-                "Legacy BCD provisioning may be incomplete. Keep the installer partition and inspect the saved BCD backup before restarting.",
+                "System BCD provisioning may be incomplete. Keep the installer partition and inspect the saved BCD backup before restarting. " + error.Message,
                 cleanupIncomplete: true, inner: error);
+        }
+    }
+
+    private static void VerifyOneTimeBootSequence(IntPtr objects, string loaderGuid)
+    {
+        int status = Win32StorageInterop.RegOpenKeyExW(objects,
+            $@"{BootMgrObjectGuid}\Elements\{ElemBootSequence}",
+            Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr sequenceKey);
+        if (status != 0 || sequenceKey == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(status, "Could not re-read the one-time BCD boot sequence.");
+        try
+        {
+            if (!ReadMultiSzValue(sequenceKey, "Element").SequenceEqual(new[] { loaderGuid }, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The system BCD did not retain SWBI's one-time boot sequence.");
+        }
+        finally
+        {
+            Win32StorageInterop.RegCloseKey(sequenceKey);
         }
     }
 

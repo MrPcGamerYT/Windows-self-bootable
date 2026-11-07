@@ -205,6 +205,17 @@ public sealed class CleanupViewModel : ObservableObject
 
             LastResult = execResult;
             StatusMessage = execResult.Summary;
+            if (mode == ExecutionMode.Live)
+            {
+                // The inspected partition number/boot identities may now be stale even when an
+                // operation partially failed. Require a fresh scan before another disk mutation.
+                Inspection = null;
+                ConfirmedIndependentBoot = false;
+                SafetyChecks.Clear();
+                StatusDetail = execResult.Succeeded
+                    ? "Re-inspect before attempting any further disk operation."
+                    : "Re-inspect to see what remains; do not retry from the old inspection. The flags in the result show what already completed.";
+            }
         }
         catch (OperationCanceledException)
         {

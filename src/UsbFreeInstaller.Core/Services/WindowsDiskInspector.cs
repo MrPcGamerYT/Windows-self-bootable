@@ -332,13 +332,14 @@ public sealed class WindowsDiskInspector : IDiskInspector
 
                 RawVolumeBinding? mv = mountedVolumes.FirstOrDefault(v =>
                     v.DiskNumber == diskNum &&
-                    ((v.StartingOffsetBytes > 0 && Math.Abs(v.StartingOffsetBytes - rp.StartingOffsetBytes) < 65536) ||
-                     (v.PartitionNumber > 0 && v.PartitionNumber == rp.PartitionNumber)));
+                    (v.StartingOffsetBytes > 0
+                        ? v.StartingOffsetBytes == rp.StartingOffsetBytes
+                        : v.PartitionNumber > 0 && v.PartitionNumber == rp.PartitionNumber));
 
                 string? dl = mv?.DriveLetter;
                 if (dl is null && diskNum == targetDiskNumber &&
-                    ((targetStartOffset > 0 && Math.Abs(rp.StartingOffsetBytes - targetStartOffset) < 65536) ||
-                     rp.PartitionNumber == targetPartNumber))
+                    (targetStartOffset > 0 ? rp.StartingOffsetBytes == targetStartOffset
+                        : rp.PartitionNumber == targetPartNumber))
                 {
                     dl = sysDriveLetter;
                 }
@@ -372,13 +373,18 @@ public sealed class WindowsDiskInspector : IDiskInspector
                     }
                 }
 
+                // NO_DRIVE_LETTER can survive a reboot even after SetVolumeMountPoint succeeds.
+                // A volume GUID path still exposes the FAT32 label and manifest without assigning
+                // a letter or guessing that an unrelated same-sized partition belongs to SWBI.
                 bool hasManifest = false;
-                if (!string.IsNullOrWhiteSpace(dl))
+                string? manifestRoot = mv?.VolumeGuidPath ??
+                    (!string.IsNullOrWhiteSpace(dl) ? $@"{dl}:\" : null);
+                if (manifestRoot is not null)
                 {
                     try
                     {
-                        hasManifest = File.Exists($@"{dl}:\{SwbiBrand.ManifestFileName}") ||
-                                      File.Exists($@"{dl}:\{SwbiBrand.LegacyManifestFileName}");
+                        hasManifest = File.Exists(Path.Combine(manifestRoot, SwbiBrand.ManifestFileName)) ||
+                                      File.Exists(Path.Combine(manifestRoot, SwbiBrand.LegacyManifestFileName));
                     }
                     catch
                     {
@@ -398,8 +404,9 @@ public sealed class WindowsDiskInspector : IDiskInspector
                 bool isSysPart = string.Equals(gptTypeStr, GptPartitionTypeGuids.EfiSystem, StringComparison.OrdinalIgnoreCase) ||
                                  (partStyle == PartitionStyleType.Mbr && rp.MbrBootIndicator);
                 bool isCurrentOs = diskNum == targetDiskNumber &&
-                    (rp.PartitionNumber == targetPartNumber ||
-                     string.Equals(dl, sysDriveLetter, StringComparison.OrdinalIgnoreCase));
+                    (targetStartOffset > 0 ? rp.StartingOffsetBytes == targetStartOffset
+                        : rp.PartitionNumber == targetPartNumber &&
+                          string.Equals(dl, sysDriveLetter, StringComparison.OrdinalIgnoreCase));
 
                 PartitionRole role = ClassifyPartitionRole(
                     isCurrentOs,
@@ -938,11 +945,8 @@ public sealed class WindowsDiskInspector : IDiskInspector
             if (!string.IsNullOrEmpty(vio.Service)) return vio;
         }
 
-        if (activeServices.Count > 0)
-        {
-            return activeServices[0];
-        }
-
+        // A service installed on the machine is not necessarily the one driving this disk.
+        // An unrelated guess could suppress injection of the *actual* RAID/VMD driver.
         return (string.Empty, string.Empty);
     }
 
@@ -951,9 +955,9 @@ public sealed class WindowsDiskInspector : IDiskInspector
         {
             "NVME" => ("stornvme", "Standard NVM Express Controller"),
             "SATA" or "ATA" => ("storahci", "Standard SATA AHCI Controller"),
-            "RAID" => ("iaStorVD", "RAID / VMD Storage Controller"),
+            "RAID" => (string.Empty, "RAID Controller (service unknown)"),
             "FILEBACKEDVIRTUAL" or "VIRTUAL" => ("vhdmp", "Microsoft Virtual Disk Controller"),
-            _ => ("disk", "Standard Storage Controller")
+            _ => (string.Empty, "Storage Controller (service unknown)")
         };
 
     private static string CleanMuiDisplayString(string? raw, string fallbackSvc)

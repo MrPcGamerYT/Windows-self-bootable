@@ -164,6 +164,32 @@ public static class NativeDriverStoreScanner
         return exportedCount;
     }
 
+    /// <summary>
+    /// Counting *any* OEM storage INF does not prove the running disk controller's driver
+    /// was exported. Look for the active service binary inside an exported INF package.
+    /// This is evidence for a Load Driver fallback, not proof WinPE will load the driver.
+    /// </summary>
+    public static string? FindActiveStorageDriverInf(string storageDirectory, string? serviceName)
+    {
+        string? expectedSys = ResolveActiveServiceSysFileName(serviceName);
+        if (string.IsNullOrWhiteSpace(expectedSys) || !Directory.Exists(storageDirectory)) return null;
+
+        foreach (string package in Directory.EnumerateDirectories(storageDirectory))
+        {
+            try
+            {
+                string? inf = Directory.EnumerateFiles(package, "*.inf", SearchOption.AllDirectories).FirstOrDefault();
+                if (inf is not null &&
+                    Directory.EnumerateFiles(package, "*.sys", SearchOption.AllDirectories).Any(p =>
+                        string.Equals(Path.GetFileName(p), expectedSys, StringComparison.OrdinalIgnoreCase)))
+                    return inf;
+            }
+            catch (IOException) { /* an unreadable package is not a verified fallback */ }
+            catch (UnauthorizedAccessException) { /* idem */ }
+        }
+        return null;
+    }
+
     private static int ReconstructLiveStorageDriversFromStrippedOs(
         IReadOnlyList<string> destinationDirectories,
         string? activeDriverSysName,
@@ -469,9 +495,13 @@ public static class NativeDriverStoreScanner
 
     private static string? ResolveActiveServiceSysFileName(string? serviceName)
     {
-        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(serviceName))
+        if (string.IsNullOrWhiteSpace(serviceName))
         {
             return null;
+        }
+        if (!OperatingSystem.IsWindows())
+        {
+            return $"{serviceName}.sys";
         }
 
         try
