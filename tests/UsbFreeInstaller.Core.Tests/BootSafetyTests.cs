@@ -11,16 +11,28 @@ namespace UsbFreeInstaller.Core.Tests;
 public sealed class BootSafetyTests
 {
     [Fact]
-    public async Task Uefi_UsesOnlyFirmwareAndNeverBacksUpOrWritesSystemBcd()
+    public async Task Uefi_UsesBackedUpOneTimeBcdRamdisk_NotBootNextOnBasicData()
     {
-        var backend = new FakeBootBackend();
-        var service = new WindowsBcdBootService(new SafeRedactingLogger(), backend);
-        BcdProvisionResult result = await service.ConfigureOneTimeWinPeBootAsync("W:", "unused", FirmwareMode.Uefi);
-        Assert.Equal(new[] { "uefi" }, backend.Calls);
-        Assert.Equal("UEFI:Boot0010", result.FirmwareBootGuid);
-        Assert.Null(result.BcdBackupFilePath);
-        Assert.Null(result.OsLoaderGuid);
-        Assert.Null(result.SdiDeviceGuid);
+        string dir = Path.Combine(Path.GetTempPath(), $"swbi-test-{Guid.NewGuid():N}");
+        try
+        {
+            var backend = new FakeBootBackend();
+            var service = new WindowsBcdBootService(new SafeRedactingLogger(), backend);
+            BcdProvisionResult result = await service.ConfigureOneTimeWinPeBootAsync("W:", dir, FirmwareMode.Uefi);
+            Assert.Equal(new[] { "backup", "inspect", "ramdisk-uefi" }, backend.Calls);
+            Assert.NotNull(result.BcdBackupFilePath);
+            Assert.NotNull(result.OsLoaderGuid);
+            Assert.NotNull(result.SdiDeviceGuid);
+            Assert.Null(result.FirmwareBootGuid);
+            Assert.Equal(FirmwareMode.Uefi, backend.RegisteredMode);
+
+            var failureBackend = new FakeBootBackend { BackupSucceeds = false };
+            service = new WindowsBcdBootService(new SafeRedactingLogger(), failureBackend);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.ConfigureOneTimeWinPeBootAsync("W", dir, FirmwareMode.Uefi));
+            Assert.Equal(new[] { "backup" }, failureBackend.Calls);
+        }
+        finally { Directory.Delete(dir, recursive: true); }
     }
 
     [Fact]
@@ -32,7 +44,8 @@ public sealed class BootSafetyTests
             var backend = new FakeBootBackend();
             var service = new WindowsBcdBootService(new SafeRedactingLogger(), backend);
             BcdProvisionResult result = await service.ConfigureOneTimeWinPeBootAsync("W", dir, FirmwareMode.LegacyBios);
-            Assert.Equal(new[] { "backup", "inspect", "legacy" }, backend.Calls);
+            Assert.Equal(new[] { "backup", "inspect", "ramdisk-legacybios" }, backend.Calls);
+            Assert.Equal(FirmwareMode.LegacyBios, backend.RegisteredMode);
             Assert.NotNull(result.OsLoaderGuid);
             Assert.Null(result.FirmwareBootGuid);
 
@@ -61,10 +74,25 @@ public sealed class BootSafetyTests
     }
 
     [Fact]
-    public void DirectSystemBcdProvision_RejectsUefiBeforeAccessingRegistry()
+    public async Task Uefi_PreviousSwbiFirmwareSlot_BlocksCreatingASecondBootPath()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"swbi-test-{Guid.NewGuid():N}");
+        try
+        {
+            var backend = new FakeBootBackend { ExistingFirmwareSlot = "UEFI:Boot0010" };
+            var service = new WindowsBcdBootService(new SafeRedactingLogger(), backend);
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                service.ConfigureOneTimeWinPeBootAsync("W", dir, FirmwareMode.Uefi));
+            Assert.Equal(new[] { "backup", "inspect" }, backend.Calls);
+        }
+        finally { if (Directory.Exists(dir)) Directory.Delete(dir, recursive: true); }
+    }
+
+    [Fact]
+    public void DirectSystemBcdProvision_RejectsUnknownFirmwareBeforeAccessingRegistry()
     {
         Assert.Throws<InvalidOperationException>(() =>
-            NativeUefiAndBcdRegistryEngine.ProvisionSystemBcdInRegistry("W", FirmwareMode.Uefi, new SafeRedactingLogger()));
+            NativeUefiAndBcdRegistryEngine.ProvisionSystemBcdInRegistry("W", FirmwareMode.Unknown, new SafeRedactingLogger()));
     }
 
     [Fact]
@@ -249,16 +277,18 @@ public sealed class BootSafetyTests
         public List<string> Calls { get; } = new();
         public bool BackupSucceeds { get; init; } = true;
         public string? ExistingLoader { get; init; }
-        public string RegisterUefi(string drive, ISafeLogger logger) { Calls.Add("uefi"); return "UEFI:Boot0010"; }
+        public string? ExistingFirmwareSlot { get; init; }
+        public FirmwareMode? RegisteredMode { get; private set; }
         public bool BackupSystemBcd(string path, ISafeLogger logger) { Calls.Add("backup"); return BackupSucceeds; }
         public ActiveBcdState InspectSystemBcd()
         {
             Calls.Add("inspect");
-            return new ActiveBcdState(false, "", "", ExistingLoader, null);
+            return new ActiveBcdState(false, "", "", ExistingLoader, null, ExistingFirmwareSlot);
         }
-        public (string SdiGuid, string LoaderGuid) RegisterLegacyBcd(string drive, ISafeLogger logger)
+        public (string SdiGuid, string LoaderGuid) RegisterRamdiskBcd(string drive, FirmwareMode firmwareMode, ISafeLogger logger)
         {
-            Calls.Add("legacy");
+            Calls.Add($"ramdisk-{firmwareMode.ToString().ToLowerInvariant()}");
+            RegisteredMode = firmwareMode;
             return ("{11111111-1111-1111-1111-111111111111}", "{22222222-2222-2222-2222-222222222222}");
         }
     }

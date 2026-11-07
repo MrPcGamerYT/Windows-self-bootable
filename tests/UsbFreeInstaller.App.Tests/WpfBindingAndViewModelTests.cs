@@ -460,8 +460,9 @@ public sealed class WpfBindingAndViewModelTests
             bool includeNetworkDrivers,
             bool injectStorageIntoBootWim,
             IProgress<DeploymentProgress>? progress = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(new DriverHarvestSummary(2, 1, 1024 * 1024, injectStorageIntoBootWim));
+            CancellationToken cancellationToken = default,
+            string? activeControllerServiceName = null) =>
+            Task.FromResult(new DriverHarvestSummary(2, 1, 1024 * 1024, injectStorageIntoBootWim, true));
 
         public Task LaunchInPlaceUpgradeSetupAsync(string installerDriveLetter, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -474,9 +475,8 @@ public sealed class WpfBindingAndViewModelTests
             string backupDirectory,
             FirmwareMode firmwareMode = FirmwareMode.Uefi,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(firmwareMode == FirmwareMode.Uefi
-                ? new BcdProvisionResult(null, null, null, "UEFI:Boot0010")
-                : new BcdProvisionResult("bcd.bak", "{11111111-1111-1111-1111-111111111111}", "{22222222-2222-2222-2222-222222222222}", null));
+            Task.FromResult(new BcdProvisionResult("bcd.bak", "{11111111-1111-1111-1111-111111111111}",
+                "{22222222-2222-2222-2222-222222222222}", null));
 
         public Task RollbackBcdEntriesAsync(
             string? osLoaderGuid,

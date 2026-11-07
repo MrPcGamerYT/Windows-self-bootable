@@ -91,8 +91,9 @@ ramdisksdipath          \boot\boot.sdi
         var generator = new SetupGuideGenerator();
         string uefi = generator.Generate(scenario.Environment with { Firmware = FirmwareMode.Uefi }, plan).CriticalRules[0];
         string legacy = generator.Generate(scenario.Environment with { Firmware = FirmwareMode.LegacyBios }, plan).CriticalRules[0];
-        Assert.Contains("BootNext", uefi);
-        Assert.DoesNotContain("Windows Boot Manager", uefi);
+        Assert.Contains("Windows Boot Manager", uefi);
+        Assert.Contains("backed-up system BCD", uefi);
+        Assert.Contains("No firmware BootNext", uefi);
         Assert.Contains("Windows Boot Manager", legacy);
         Assert.DoesNotContain("BootNext", legacy);
     }

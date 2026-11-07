@@ -6,6 +6,18 @@ namespace UsbFreeInstaller.Core.Tests;
 
 public sealed class OnlineShrinkSafetyTests
 {
+    [Theory]
+    [InlineData(1_000_000, 4096, 1_000_000, true)]
+    [InlineData(1_000_000, 4096, 995_904, true)]
+    [InlineData(1_000_000, 4096, 990_000, false)]
+    [InlineData(1_000_000, 4096, 1_000_001, false)]
+    [InlineData(1_000_000, 4096, 700_000, false)] // partition grew; filesystem did not
+    public void ExtendVerification_UsesNtfsGeometry_NotPartitionDeviceLength(
+        long partitionBytes, int clusterBytes, long ntfsBytes, bool expected)
+    {
+        Assert.Equal(expected, NtfsExtendSafety.IsFileSystemExtended(partitionBytes, clusterBytes, ntfsBytes));
+    }
+
     [Fact]
     public void Success_CommitsAndVerifiesFilesystemBeforeResizingPartition()
     {
@@ -149,6 +161,91 @@ public sealed class PartitionLayoutSafetyTests
             string.Empty, 0, false, false, 0, Guid.Empty);
     private static RawDiskLayoutSnapshot Layout(params RawPartitionLayoutEntry[] entries) =>
         new(Win32StorageInterop.PARTITION_STYLE_GPT, DiskId, 0, 100_000, 128, 0, 0, entries);
+
+    [Fact]
+    public void InstallerDeletion_UsesGptGuidEvenWhenPartitionNumberChanges()
+    {
+        var os = Part(1_000, 4_000, OsId, number: 2) with
+        {
+            GptPartitionType = Win32StorageInterop.GptBasicDataTypeGuid
+        };
+        var setup = Part(5_000, 2_000, InstallerId, number: 4) with
+        {
+            GptPartitionType = Win32StorageInterop.GptBasicDataTypeGuid
+        };
+        Assert.Equal(setup, PartitionLayoutSafety.ResolveInstallerForDeletion(Layout(os, setup), $"{{{InstallerId:D}}}"));
+        Assert.Throws<InvalidOperationException>(() =>
+            PartitionLayoutSafety.ResolveInstallerForDeletion(Layout(os, setup), string.Empty));
+        Assert.Throws<InvalidOperationException>(() =>
+            PartitionLayoutSafety.ResolveInstallerForDeletion(Layout(os, setup), $"{{{InstallerId:D}}}".Replace("a000", "b000")));
+    }
+
+    [Fact]
+    public void DeletionReadback_RequiresTargetGoneAndOtherPartitionsUnchanged()
+    {
+        var os = Part(1_000, 4_000, OsId) with { GptPartitionType = Win32StorageInterop.GptBasicDataTypeGuid };
+        var setup = Part(5_000, 2_000, InstallerId, 2) with
+        {
+            GptPartitionType = Win32StorageInterop.GptBasicDataTypeGuid
+        };
+        var before = Layout(os, setup);
+
+        Assert.True(PartitionLayoutSafety.WasInstallerDeleted(before, Layout(os with { PartitionNumber = 1 }), setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before, before, setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before,
+            Layout(os, setup with { GptPartitionId = Guid.NewGuid() }), setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before,
+            Layout(os with { PartitionLengthBytes = 3_500 }), setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before,
+            Layout(os) with { GptDiskId = Guid.NewGuid() }, setup));
+    }
+
+    [Fact]
+    public void InstallerDeletion_RejectsEspOrMbrActiveAndStaleOffset()
+    {
+        var esp = Part(5_000, 2_000, InstallerId, number: 4) with
+        {
+            GptPartitionType = Win32StorageInterop.GptEfiSystemTypeGuid
+        };
+        Assert.Throws<InvalidOperationException>(() =>
+            PartitionLayoutSafety.ResolveInstallerForDeletion(Layout(esp), $"{{{InstallerId:D}}}"));
+
+        const uint sig = 0x12345678;
+        var mbrSetup = new RawPartitionLayoutEntry(Win32StorageInterop.PARTITION_STYLE_MBR,
+            5_000, 2_000, 4, Guid.Empty, Guid.Empty, 0, "", 0x0C, false, true, 0, Guid.Empty, RawSlotIndex: 2);
+        var mbrLayout = new RawDiskLayoutSnapshot(Win32StorageInterop.PARTITION_STYLE_MBR,
+            Guid.Empty, 0, 0, 0, sig, 0, new[] { mbrSetup });
+        string identity = $"MBR:{sig:X8}:{mbrSetup.StartingOffsetBytes:X12}";
+        Assert.Equal(mbrSetup, PartitionLayoutSafety.ResolveInstallerForDeletion(mbrLayout, identity));
+        Assert.Throws<InvalidOperationException>(() =>
+            PartitionLayoutSafety.ResolveInstallerForDeletion(mbrLayout, identity.Replace("001388", "002388")));
+        Assert.Throws<InvalidOperationException>(() =>
+            PartitionLayoutSafety.ResolveInstallerForDeletion(mbrLayout with
+            {
+                Partitions = new[] { mbrSetup with { MbrBootIndicator = true } }
+            }, identity));
+    }
+
+    [Fact]
+    public void MbrDeletionReadback_RequiresSameDiskSignatureAndEmptyOldSlot()
+    {
+        const uint sig = 0x12345678;
+        var os = new RawPartitionLayoutEntry(Win32StorageInterop.PARTITION_STYLE_MBR,
+            1_000, 4_000, 1, Guid.Empty, Guid.Empty, 0, "", 0x07, true, true, 0, Guid.Empty, RawSlotIndex: 0);
+        var setup = os with
+        {
+            StartingOffsetBytes = 5_000, PartitionLengthBytes = 2_000, PartitionNumber = 2,
+            MbrPartitionType = 0x0C, MbrBootIndicator = false, RawSlotIndex = 2
+        };
+        var before = new RawDiskLayoutSnapshot(Win32StorageInterop.PARTITION_STYLE_MBR,
+            Guid.Empty, 0, 0, 0, sig, 0, new[] { os, setup });
+        Assert.True(PartitionLayoutSafety.WasInstallerDeleted(before,
+            before with { Partitions = new[] { os } }, setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before,
+            before with { Partitions = new[] { os }, MbrSignature = sig + 1 }, setup));
+        Assert.False(PartitionLayoutSafety.WasInstallerDeleted(before,
+            before with { Partitions = new[] { os, setup with { MbrPartitionType = 0x07 } } }, setup));
+    }
 
     [Fact]
     public void Exact_nonoverlapping_volume_is_allowed()

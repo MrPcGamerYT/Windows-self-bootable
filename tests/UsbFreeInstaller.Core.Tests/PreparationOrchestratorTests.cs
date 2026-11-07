@@ -171,6 +171,46 @@ public sealed class PreparationOrchestratorTests
         Assert.Contains(result.PlannedOrExecutedActions, item => item.Contains("boot-entry cleanup failed"));
     }
 
+    [Fact]
+    public async Task ExecuteAsync_WhenVmdDriverIsNotVerified_ShowsDiskDetectionWarningBeforeReboot()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreateIntelVmdUpgradeWin10ToWin11Scenario();
+        var env = scenario.Environment with { IsSimulated = false };
+        var evaluator = new ReadinessEvaluator(new PartitionSizingCalculator());
+        var harvester = new SpyDriverHarvester();
+        var orchestrator = new PreparationOrchestrator(new StubDiskInspector(env), new SpyPartitionService(),
+            new SpyDeploymentService(), new SpyBcdService(), evaluator, new SetupGuideGenerator(),
+            new SafeRedactingLogger(), driverHarvesterService: harvester);
+
+        PreparationResult result = await orchestrator.ExecuteAsync(evaluator.Evaluate(env, scenario.SampleIso),
+            new UserSafetyConfirmations
+            {
+                HasVerifiedExternalBackup = true,
+                UnderstandsCleanInstallWipesTargetPartition = true,
+                UnderstandsNeverDeleteInstallerPartition = true
+            }, ExecutionMode.Live);
+
+        Assert.True(result.Succeeded, result.ErrorMessage);
+        Assert.Equal("iaStorVD", harvester.ControllerName);
+        Assert.Contains("WARNING: Windows Setup may NOT detect", result.Summary);
+        Assert.False(result.CreatedManifest!.InjectedBootWimStorageDrivers);
+    }
+
+    private sealed class SpyDriverHarvester : IDriverHarvesterService
+    {
+        public string? ControllerName { get; private set; }
+        public Task<DriverHarvestSummary> ExportAndInjectDriversAsync(string installerDriveLetter,
+            bool includeNetworkDrivers, bool injectStorageIntoBootWim,
+            IProgress<DeploymentProgress>? progress = null, CancellationToken cancellationToken = default,
+            string? activeControllerServiceName = null)
+        {
+            ControllerName = activeControllerServiceName;
+            return Task.FromResult(new DriverHarvestSummary(3, 0, 1024, InjectedIntoBootWim: false));
+        }
+        public Task LaunchInPlaceUpgradeSetupAsync(string installerDriveLetter,
+            CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
     private sealed class StubDiskInspector(SystemEnvironmentSnapshot snapshot) : IDiskInspector
     {
         public Task<SystemEnvironmentSnapshot> InspectEnvironmentAsync(CancellationToken cancellationToken = default) =>
@@ -275,7 +315,7 @@ public sealed class PreparationOrchestratorTests
                 "backup.bcd",
                 "{11111111-1111-1111-1111-111111111111}",
                 "{22222222-2222-2222-2222-222222222222}",
-                "{33333333-3333-3333-3333-333333333333}"));
+                null));
         }
 
         public Task RollbackBcdEntriesAsync(
