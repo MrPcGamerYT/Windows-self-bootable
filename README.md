@@ -45,7 +45,7 @@ Normally, doing a **true clean Windows installation**, **downgrading from Window
 
 **SWBI (`Self Windows Bootable Installer`)** attempts this using a temporary partition, including on systems with only `C:`. Firmware and storage behavior varies; preparation or boot may fail.
 
-> **Repair-branch status:** The UEFI boot/driver/cleanup changes described below are source changes on `arena/73a09c8a-windows-self-bootable`, **not a published release**. A green Windows build and synthetic WIM tests cannot establish that Setup boots or sees the disk on the affected PC. Do not assume the executable at Releases/latest contains this repair.
+> **Repair-branch status:** The UEFI boot/driver/cleanup changes described below are source changes on `arena/73a09c8a-windows-self-bootable`, **not a published release**. The Windows CI WIM round-trip is green, but the affected PC subsequently revealed an older SWBI boot entry blocking preparation after ISO deployment. This branch now checks for that conflict **before touching BitLocker or the disk** and provides a reviewed boot-only cleanup path. CI still cannot establish that Setup boots or sees the disk on the affected PC. Do not assume the executable at Releases/latest contains this repair.
 
 > **Data-safety warning:** Back up important files and save the BitLocker recovery key before live operation. Have independent Windows recovery/installation media available. Online partition changes and firmware writes are not atomic, and power loss or failed cleanup can require manual recovery. Validate this version in a disposable Windows VM before using it on important hardware.
 
@@ -212,15 +212,10 @@ Once your new Windows installation reaches the Desktop and boots normally on its
 
 1. Launch **`SWBI-SelfWindowsBootableInstaller-...exe`** as Administrator *(or run `SWBI-SelfWindowsBootableInstaller.exe --cleanup`)*.
 2. Click **`2. Post-Install Cleanup`** in the top navigation bar (and make sure **`Dry-Run Safety Mode`** is **unchecked**).
-3. Click **`Inspect Post-Install State`** (SWBI verifies you are booted into your real Windows OS, confirms `SWBI-SETUP`'s cryptographic manifest / partition GUID, and checks right-side adjacency to `C:`).
-4. Ensure both checkboxes are checked:
-   - **`Automatically extend C: into reclaimed space`**
-   - **`I confirm my new Windows installation boots normally into the desktop without needing SWBI Setup.`**
-5. Click **`Remove SWBI Boot Entries & Reclaim Partition`**.
-6. In **2–5 seconds**, SWBI:
-   - Removes the recorded temporary firmware or legacy BCD entry,
-   - Deletes the temporary `SWBI-SETUP` partition, and
-   - Attempts to extend `C:` into the reclaimed space when the layout permits it.
+3. Click **`Inspect SWBI State (Read-Only)`**. SWBI checks that the current Windows session does not depend on SWBI, looks for the installer partition and its matching JSON manifest / partition identity, and shows the exact boot-entry identifiers. The manifest is an ownership record, **not a cryptographic signature**.
+4. Review every listed identifier and candidate partition. Only if it matches your previous SWBI run and the safety state is ready, confirm **`I confirm this Windows desktop boots independently ...`**. Leave **`Automatically extend C:`** checked only if the inspected partition is the one you intend to reclaim and it is adjacent.
+5. In Live mode, click **`Remove SWBI Boot Entries & Reclaim Partition`**. SWBI takes a fresh active-BCD backup before boot-entry removal, rechecks boot/disk identities, then removes only recognized entries and the **manifest-matching** installer partition. If identity verification fails, cleanup stops; do not manually delete other partitions.
+6. If `SWBI-SETUP` is **absent** (for example after a failed preparation was rolled back), the action instead reads **`Remove Recognized SWBI Boot Entries Only`** and will not delete or resize any partition. See the recovery guide below before using it.
 
 ---
 
@@ -394,6 +389,19 @@ Classic MBR partition tables have a hardware limit of **4 primary slots** (`64 b
 <summary><strong>Q: What if I change my mind after Step 5 before installing Windows?</strong></summary>
 
 If your existing Windows still boots normally, open SWBI → **`2. Post-Install Cleanup`** and inspect the state before removing the temporary entry and partition. Space is reclaimed only where the layout allows it; if cleanup fails, leave the partition intact and investigate with recovery media.
+</details>
+
+<details>
+<summary><strong>Q: Step 4 says an existing SWBI boot entry blocks preparation, but the SWBI-SETUP partition was rolled back. What now?</strong></summary>
+
+**Stop trying preparation.** An ISO-copy percentage is not boot readiness: the installer is not armed and **Next** stays disabled on failure. On the repair branch, this conflict is detected before BitLocker suspension, OS shrink, or ISO deployment. The older SWBI entry may be a BCD loader/SDI or a firmware `BootXXXX` slot; the app shows its identifier. The prior run's installer partition may already have been removed and C: extended; check the current disk state rather than assuming it exists.
+
+1. Boot your **existing Windows desktop independently**. Keep a backup, your BitLocker recovery key, and independent recovery media. Launch the **newly built repair-branch executable** as Administrator. The published release may not contain this change.
+2. Open **`2. Post-Install Cleanup` → `Inspect SWBI State (Read-Only)`**. Read the boot IDs and partition safety checks. You can compare with **read-only** administrator commands `bcdedit /enum all` and `bcdedit /enum firmware`; never use `bcdedit /delete`, clear `BootNext`, or delete an EFI/recovery partition based on a name alone.
+3. **Only when** inspection shows **no SWBI-SETUP candidate partition**, a recognized old SWBI boot entry, and an independent Windows boot, decide whether to run boot-only cleanup. Explicitly confirm the desktop's independent boot, turn **off Dry-Run Safety Mode** for an intentional live change, and use **`Remove Recognized SWBI Boot Entries Only`**. A fresh active BCD backup is saved under `C:\ProgramData\SWBI\Work\bcd-backups` (the precise location is in the redacted SWBI log); BCD type/title/WinPE flags and older UEFI option title/**EFI device path** are checked again before removal. Name-only or missing firmware slots are refused. No partition is deleted or resized on this path. If the entry is unfamiliar, BCD inspection failed, or an unrelated one-time boot is pending, **do not remove it**; share the redacted inspection/log with a trusted administrator instead.
+4. Re-inspect. Only once the old entries are absent should you consider a **new** preparation. If a SWBI-SETUP partition does exist, the normal cleanup path requires its own matching manifest and verified disk/partition identity; never assume an old log proves the current layout. Test boot/Setup disk detection on disposable hardware before relying on this for a real install.
+
+Old firmware entries without a manifest cannot be authenticated cryptographically by their name alone. Even ownership-checked cleanup should be treated as a deliberate boot-configuration change, not an automatic retry.
 </details>
 
 ---

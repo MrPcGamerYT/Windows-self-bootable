@@ -89,6 +89,43 @@ public sealed class BootSafetyTests
     }
 
     [Fact]
+    public void BootPreflight_ReportsExactIdentitiesAndNeverClearsAnUnrelatedPendingSequence()
+    {
+        const string loader = "{11111111-1111-1111-1111-111111111111}";
+        var state = new ActiveBcdState(false, "partition=C:", "partition=C:",
+            loader, null, "UEFI:Boot0010", HasPendingBootSequence: true);
+        string? blocker = WindowsBcdBootService.GetPreparationBlocker(state);
+        Assert.Contains(loader, blocker);
+        Assert.Contains("UEFI:Boot0010", blocker);
+        Assert.Contains("2. Post-Install Cleanup", blocker);
+        Assert.Contains("unverified EFI device path", WindowsBcdBootService.GetPreparationBlocker(
+            state with { FirmwareEntryVerified = false }));
+
+        blocker = WindowsBcdBootService.GetPreparationBlocker(state with
+        {
+            ExistingUsbFreeLoaderGuid = null, ExistingFirmwareBootGuid = null
+        });
+        Assert.Contains("Another one-time Windows Boot Manager sequence", blocker);
+        Assert.DoesNotContain("Post-Install Cleanup", blocker);
+
+        blocker = WindowsBcdBootService.GetPreparationBlocker(state with { InspectionSucceeded = false });
+        Assert.Contains("Cannot inspect", blocker);
+        Assert.Null(WindowsBcdBootService.GetPreparationBlocker(new ActiveBcdState(false,
+            "partition=C:", "partition=C:", null, null)));
+    }
+
+    [Fact]
+    public async Task Cleanup_NeverTouchesEntriesWhenFreshBcdBackupCannotBeWritten()
+    {
+        var backend = new FakeBootBackend { BackupSucceeds = false };
+        var service = new WindowsBcdBootService(new SafeRedactingLogger(), backend);
+        InvalidOperationException error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.RollbackBcdEntriesAsync("{11111111-1111-1111-1111-111111111111}", null));
+        Assert.Contains("nothing was removed", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(new[] { "backup" }, backend.Calls);
+    }
+
+    [Fact]
     public void DirectSystemBcdProvision_RejectsUnknownFirmwareBeforeAccessingRegistry()
     {
         Assert.Throws<InvalidOperationException>(() =>
@@ -192,6 +229,34 @@ public sealed class BootSafetyTests
         Assert.Equal(new ushort[] { 1, 2, 0x10 }, Slots(store.Read("BootOrder")!.Data));
     }
 
+    [Theory]
+    [InlineData("name-only")]
+    [InlineData("different-efi-path")]
+    [InlineData("missing-slot")]
+    public void Cleanup_DoesNotRemoveSameNameEntryWithoutTheSwbiInstallerDevicePath(string caseName)
+    {
+        var store = CreateStore();
+        byte[]? option = caseName switch
+        {
+            "name-only" => LoadOption(SwbiBrand.BootChooserEntryName),
+            "different-efi-path" => SwbiLoadOption(@"\EFI\MICROSOFT\BOOT\BOOTMGFW.EFI"),
+            _ => null
+        };
+        if (option is not null)
+        {
+            store.Set("Boot0010", option);
+            Assert.True(UefiBootRegistration.HasSwbiDescription(option));
+            Assert.False(UefiBootRegistration.IsSwbiLoadOption(option));
+        }
+        store.Set("BootOrder", Order(1, 2, 0x10));
+        store.Set("BootNext", Order(0x10));
+
+        Assert.Throws<InvalidOperationException>(() => UefiBootRegistration.Remove(store, "UEFI:Boot0010"));
+        Assert.Equal(new ushort[] { 1, 2, 0x10 }, Slots(store.Read("BootOrder")!.Data));
+        Assert.Equal(new ushort[] { 0x10 }, Slots(store.Read("BootNext")!.Data));
+        if (option is not null) Assert.Equal(option, store.Read("Boot0010")!.Data);
+    }
+
     [Fact]
     public void Cleanup_RejectsFirmwareThatTruncatesOtherBootOrderEntries()
     {
@@ -235,7 +300,32 @@ public sealed class BootSafetyTests
         return store;
     }
 
-    private static byte[] SwbiLoadOption() => LoadOption(SwbiBrand.BootChooserEntryName);
+    private static byte[] SwbiLoadOption(string filePath = @"\EFI\BOOT\BOOTX64.EFI")
+    {
+        // Match the HARDDRIVE_DP + FILEPATH_DP + END_DP written by SWBI. A name-only
+        // fake would no longer be sufficient evidence for firmware cleanup.
+        byte[] description = Encoding.Unicode.GetBytes(SwbiBrand.BootChooserEntryName + "\0");
+        byte[] file = Encoding.Unicode.GetBytes(filePath + "\0");
+        int pathLength = 42 + 4 + file.Length + 4;
+        byte[] option = new byte[6 + description.Length + pathLength];
+        BinaryPrimitives.WriteUInt32LittleEndian(option.AsSpan(0, 4), 1);
+        BinaryPrimitives.WriteUInt16LittleEndian(option.AsSpan(4, 2), (ushort)pathLength);
+        description.AsSpan().CopyTo(option.AsSpan(6));
+        Span<byte> path = option.AsSpan(6 + description.Length);
+        path[0] = 4; path[1] = 1;
+        BinaryPrimitives.WriteUInt16LittleEndian(path.Slice(2, 2), 42);
+        BinaryPrimitives.WriteUInt32LittleEndian(path.Slice(4, 4), 5);
+        BinaryPrimitives.WriteUInt64LittleEndian(path.Slice(8, 8), 1024);
+        BinaryPrimitives.WriteUInt64LittleEndian(path.Slice(16, 8), 8192);
+        Guid.Parse("8f97b517-1644-451e-b2b7-5725c6d8ff14").TryWriteBytes(path.Slice(24, 16));
+        path[40] = 2; path[41] = 2;
+        path[42] = 4; path[43] = 4;
+        BinaryPrimitives.WriteUInt16LittleEndian(path.Slice(44, 2), (ushort)(4 + file.Length));
+        file.AsSpan().CopyTo(path.Slice(46));
+        new byte[] { 0x7F, 0xFF, 4, 0 }.AsSpan().CopyTo(path.Slice(46 + file.Length));
+        return option;
+    }
+
     private static byte[] LoadOption(string description) => new byte[6].Concat(Encoding.Unicode.GetBytes(description + "\0")).ToArray();
     private static byte[] Order(params ushort[] slots)
     {

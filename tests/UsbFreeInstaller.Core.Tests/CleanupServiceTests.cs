@@ -73,6 +73,163 @@ public sealed class CleanupServiceTests
     }
 
     [Fact]
+    public async Task BootOnlyRecovery_WithRolledBackPartition_RemovesOnlyInspectedBootEntries()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        DiskSnapshot disk = scenario.Environment.TargetDisk!;
+        SystemEnvironmentSnapshot env = scenario.Environment with
+        {
+            IsSimulated = false,
+            AllDisks = new[] { disk with
+            {
+                Partitions = disk.Partitions.Where(p => p.Role != PartitionRole.TemporaryInstaller).ToArray()
+            } }
+        };
+        const string loader = "{11111111-1111-1111-1111-111111111111}";
+        const string sdi = "{22222222-2222-2222-2222-222222222222}";
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, "partition=C:", "partition=C:", loader, sdi)
+        };
+        var partitions = new NoOpPartitionService();
+        var service = new CleanupService(new NoOpDiskInspector(env), partitions, boot, new SafeRedactingLogger());
+        CleanupInspectionResult inspection = await service.InspectAsync();
+        Assert.Equal(CleanupSafetyState.ReadyToClean, inspection.State);
+        Assert.Null(inspection.CandidatePartition);
+        Assert.Equal(loader, inspection.OrphanedBcdLoaderGuid);
+        Assert.Contains(inspection.SafetyChecks, c => c.Id == "cleanup-boot-only");
+
+        CleanupExecutionResult dryRun = await service.ExecuteCleanupAsync(inspection, true, ExecutionMode.DryRun);
+        Assert.True(dryRun.Succeeded);
+        Assert.False(dryRun.PartitionDeleted);
+        Assert.False(dryRun.OsPartitionExtended);
+        Assert.Contains("boot entries only", dryRun.Summary);
+        Assert.Equal(0, boot.RollbackCalls);
+
+        CleanupExecutionResult result = await service.ExecuteCleanupAsync(inspection, true, ExecutionMode.Live);
+        Assert.True(result.Succeeded, result.ErrorMessage);
+        Assert.True(result.BcdEntriesRemoved);
+        Assert.False(result.PartitionDeleted);
+        Assert.False(result.OsPartitionExtended);
+        Assert.Contains("No partition was deleted", result.Summary);
+        Assert.Equal(1, boot.RollbackCalls);
+        Assert.Equal(0, partitions.DeleteCalls);
+        Assert.Equal(0, partitions.ExtendCalls);
+    }
+
+    [Fact]
+    public async Task BootOnlyRecovery_LegacyUefiSlotWithoutPartition_IsIdentifiedWithoutDiskWrites()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        DiskSnapshot disk = scenario.Environment.TargetDisk!;
+        SystemEnvironmentSnapshot env = scenario.Environment with
+        {
+            IsSimulated = false,
+            AllDisks = new[] { disk with
+            {
+                Partitions = disk.Partitions.Where(p => p.Role != PartitionRole.TemporaryInstaller).ToArray()
+            } }
+        };
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, "partition=C:", "partition=C:", null, null, "UEFI:Boot0010")
+        };
+        var partitions = new NoOpPartitionService();
+        var service = new CleanupService(new NoOpDiskInspector(env), partitions, boot, new SafeRedactingLogger());
+        CleanupInspectionResult inspection = await service.InspectAsync();
+        Assert.Equal(CleanupSafetyState.ReadyToClean, inspection.State);
+        Assert.Null(inspection.CandidatePartition);
+        Assert.Equal("UEFI:Boot0010", inspection.OrphanedBcdFirmwareGuid);
+
+        CleanupExecutionResult result = await service.ExecuteCleanupAsync(inspection, true, ExecutionMode.Live);
+        Assert.True(result.Succeeded, result.ErrorMessage);
+        Assert.Equal(1, boot.RollbackCalls);
+        Assert.Equal(0, partitions.DeleteCalls);
+        Assert.Equal(0, partitions.ExtendCalls);
+    }
+
+    [Fact]
+    public async Task BootOnlyRecovery_SameNameFirmwareWithDifferentEfiPath_IsBlocked()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        DiskSnapshot disk = scenario.Environment.TargetDisk!;
+        SystemEnvironmentSnapshot env = scenario.Environment with
+        {
+            IsSimulated = false,
+            AllDisks = new[] { disk with
+            {
+                Partitions = disk.Partitions.Where(p => p.Role != PartitionRole.TemporaryInstaller).ToArray()
+            } }
+        };
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, "partition=C:", "partition=C:", null, null,
+                "UEFI:Boot0010", FirmwareEntryVerified: false)
+        };
+        var partitions = new NoOpPartitionService();
+        var service = new CleanupService(new NoOpDiskInspector(env), partitions, boot, new SafeRedactingLogger());
+        CleanupInspectionResult inspection = await service.InspectAsync();
+        Assert.Equal(CleanupSafetyState.BlockedAmbiguousPartition, inspection.State);
+        Assert.False(inspection.CanExecuteCleanup);
+        Assert.Contains(inspection.SafetyChecks, c => c.Id == "cleanup-firmware-ownership" &&
+            c.Severity == CheckSeverity.Blocker);
+        Assert.Null(inspection.CandidatePartition);
+
+        CleanupExecutionResult result = await service.ExecuteCleanupAsync(inspection, true, ExecutionMode.Live);
+        Assert.False(result.Succeeded);
+        Assert.Equal(0, boot.RollbackCalls);
+        Assert.Equal(0, partitions.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task BootOnlyRecovery_IfBootIdentityChangesAfterInspection_RefusesStaleCleanup()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        DiskSnapshot disk = scenario.Environment.TargetDisk!;
+        SystemEnvironmentSnapshot env = scenario.Environment with
+        {
+            IsSimulated = false,
+            AllDisks = new[] { disk with
+            {
+                Partitions = disk.Partitions.Where(p => p.Role != PartitionRole.TemporaryInstaller).ToArray()
+            } }
+        };
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, "partition=C:", "partition=C:",
+                "{11111111-1111-1111-1111-111111111111}", null)
+        };
+        var partitions = new NoOpPartitionService();
+        var service = new CleanupService(new NoOpDiskInspector(env), partitions, boot, new SafeRedactingLogger());
+        CleanupInspectionResult inspected = await service.InspectAsync();
+        boot.State = boot.State with { ExistingUsbFreeLoaderGuid = "{33333333-3333-3333-3333-333333333333}" };
+
+        CleanupExecutionResult result = await service.ExecuteCleanupAsync(inspected, true, ExecutionMode.Live);
+        Assert.False(result.Succeeded);
+        Assert.Contains("Nothing was removed", result.Summary);
+        Assert.Equal(0, boot.RollbackCalls);
+        Assert.Equal(0, partitions.DeleteCalls);
+        Assert.Equal(0, partitions.ExtendCalls);
+    }
+
+    [Fact]
+    public async Task Cleanup_IfSystemBcdCannotBeInspected_FailsClosedEvenWithoutInstallerPartition()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        SystemEnvironmentSnapshot env = scenario.Environment with { IsSimulated = false };
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, string.Empty, string.Empty, null, null,
+                InspectionSucceeded: false)
+        };
+        var service = new CleanupService(new NoOpDiskInspector(env), new NoOpPartitionService(), boot, new SafeRedactingLogger());
+        CleanupInspectionResult result = await service.InspectAsync();
+        Assert.Equal(CleanupSafetyState.BlockedActiveDependency, result.State);
+        Assert.False(result.CanExecuteCleanup);
+        Assert.Contains(result.SafetyChecks, c => c.Id == "cleanup-bcd-inspection");
+    }
+
+    [Fact]
     public async Task InspectAsync_UefiOnlyManifest_DoesNotInferOldSystemBcdEntries()
     {
         SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
@@ -250,23 +407,35 @@ public sealed class CleanupServiceTests
     private sealed class NoOpPartitionService : IPartitionService
     {
         public string? FailAt { get; init; }
+        public int DeleteCalls { get; private set; }
+        public int ExtendCalls { get; private set; }
         public Task SuspendBitLockerForNextRebootAsync(string volumeLetter, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task OptimizeOsVolumeBeforeShrinkAsync(string volumeLetter, StorageDriveKind driveKind, CancellationToken cancellationToken = default) => Task.CompletedTask;
         public Task<CreatedInstallerPartitionInfo> ShrinkOsAndCreateFat32InstallerPartitionAsync(int diskNumber, int osPartitionNumber, string expectedOsPartitionGuid, long newOsPartitionSizeBytes, long installerPartitionSizeBytes, string volumeLabel, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         public Task WriteInstallerManifestAsync(string installerDriveLetter, InstallerManifest manifest, CancellationToken cancellationToken = default) => Task.CompletedTask;
-        public Task DeleteInstallerPartitionAsync(int diskNumber, int installerPartitionNumber, string expectedPartitionGuid, CancellationToken cancellationToken = default) =>
-            FailAt == "delete" ? Task.FromException(new IOException("delete failed")) : Task.CompletedTask;
-        public Task ExtendOsPartitionIntoReclaimedSpaceAsync(int diskNumber, int osPartitionNumber, CancellationToken cancellationToken = default, long expectedOsPartitionOffsetBytes = 0) =>
-            FailAt == "extend" ? Task.FromException(new IOException("extend failed")) : Task.CompletedTask;
+        public Task DeleteInstallerPartitionAsync(int diskNumber, int installerPartitionNumber, string expectedPartitionGuid, CancellationToken cancellationToken = default)
+        {
+            DeleteCalls++;
+            return FailAt == "delete" ? Task.FromException(new IOException("delete failed")) : Task.CompletedTask;
+        }
+        public Task ExtendOsPartitionIntoReclaimedSpaceAsync(int diskNumber, int osPartitionNumber, CancellationToken cancellationToken = default, long expectedOsPartitionOffsetBytes = 0)
+        {
+            ExtendCalls++;
+            return FailAt == "extend" ? Task.FromException(new IOException("extend failed")) : Task.CompletedTask;
+        }
     }
 
     private sealed class NoOpBcdService : IBcdBootService
     {
-        public ActiveBcdState State { get; init; } = new(false, "partition=C:", "partition=C:", null, null, null);
+        public ActiveBcdState State { get; set; } = new(false, "partition=C:", "partition=C:", null, null, null);
         public bool FailRollback { get; init; }
+        public int RollbackCalls { get; private set; }
         public Task<BcdProvisionResult> ConfigureOneTimeWinPeBootAsync(string installerDriveLetter, string backupDirectory, FirmwareMode firmwareMode = FirmwareMode.Uefi, CancellationToken cancellationToken = default) => throw new NotSupportedException();
-        public Task RollbackBcdEntriesAsync(string? osLoaderGuid, string? sdiDeviceGuid, CancellationToken cancellationToken = default, string? firmwareBootGuid = null) =>
-            FailRollback ? Task.FromException(new IOException("boot cleanup failed")) : Task.CompletedTask;
+        public Task RollbackBcdEntriesAsync(string? osLoaderGuid, string? sdiDeviceGuid, CancellationToken cancellationToken = default, string? firmwareBootGuid = null)
+        {
+            RollbackCalls++;
+            return FailRollback ? Task.FromException(new IOException("boot cleanup failed")) : Task.CompletedTask;
+        }
         public Task<ActiveBcdState> InspectActiveBcdAsync(CancellationToken cancellationToken = default) => Task.FromResult(State);
         public Task RebootSystemAsync(int delaySeconds = 5, CancellationToken cancellationToken = default) => Task.CompletedTask;
     }
