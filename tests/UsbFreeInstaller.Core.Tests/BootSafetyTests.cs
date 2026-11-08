@@ -115,6 +115,27 @@ public sealed class BootSafetyTests
     }
 
     [Fact]
+    public void BcdFirmwareViewGuid_IsNotAnOwnedUefiBootSlot()
+    {
+        const string firmwareView = "{aaaaaaaa-1111-4444-8888-000000000010}";
+        var state = new ActiveBcdState(false, "partition=C:", "partition=C:",
+            null, null, firmwareView);
+        string? blocker = WindowsBcdBootService.GetPreparationBlocker(state);
+        Assert.Contains($"BCD firmware-view object {firmwareView}", blocker);
+        Assert.Contains("cannot be removed automatically", blocker);
+
+        // This guard executes before touching BCD or UEFI when the opt-in live Windows
+        // tests run, and is safe even without Administrator privileges.
+        if (OperatingSystem.IsWindows())
+        {
+            InvalidOperationException error = Assert.Throws<InvalidOperationException>(() =>
+                NativeUefiAndBcdRegistryEngine.RollbackRegistryAndUefiEntries(
+                    null, null, firmwareView, new SafeRedactingLogger()));
+            Assert.Contains("cannot be removed", error.Message);
+        }
+    }
+
+    [Fact]
     public async Task Cleanup_NeverTouchesEntriesWhenFreshBcdBackupCannotBeWritten()
     {
         var backend = new FakeBootBackend { BackupSucceeds = false };

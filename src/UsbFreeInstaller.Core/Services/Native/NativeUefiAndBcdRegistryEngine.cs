@@ -387,9 +387,18 @@ public static class NativeUefiAndBcdRegistryEngine
             return;
         }
 
-        // Firmware-only cleanup must not open or flush the host's BCD hive.
+        // A braced firmware GUID is a BCD firmware-view object, potentially a mirror of
+        // a BootXXXX NVRAM entry. It is NOT a firmware slot identifier. Deleting its
+        // registry key cannot be verified to remove the actual UEFI boot option.
+        if (Guid.TryParse(firmwareBootId, out _))
+            throw new InvalidOperationException(
+                "A BCD firmware-view GUID cannot be removed as an SWBI firmware slot. Inspect its mapped UEFI BootXXXX entry without changing BootOrder/BootNext.");
         if (!string.IsNullOrWhiteSpace(firmwareBootId) &&
-            firmwareBootId.StartsWith("UEFI:", StringComparison.OrdinalIgnoreCase))
+            !UefiBootRegistration.TryParseFirmwareId(firmwareBootId, out _))
+            throw new InvalidOperationException("Unrecognized firmware entry identifier; no boot settings were changed.");
+
+        // Firmware-only cleanup must not open or flush the host's BCD hive.
+        if (!string.IsNullOrWhiteSpace(firmwareBootId))
         {
             if (!Win32StorageInterop.EnableProcessPrivilege("SeSystemEnvironmentPrivilege"))
             {
@@ -398,13 +407,12 @@ public static class NativeUefiAndBcdRegistryEngine
             UefiBootRegistration.Remove(new WindowsFirmwareVariableStore(), firmwareBootId);
         }
 
-        if (string.IsNullOrWhiteSpace(osLoaderGuid) && string.IsNullOrWhiteSpace(sdiDeviceGuid) &&
-            (string.IsNullOrWhiteSpace(firmwareBootId) || !firmwareBootId.StartsWith('{')))
+        if (string.IsNullOrWhiteSpace(osLoaderGuid) && string.IsNullOrWhiteSpace(sdiDeviceGuid))
         {
             return;
         }
 
-        // Clean legacy or previous-version BCD entries when explicitly identified.
+        // Clean only verified SWBI ramdisk loader / SDI BCD entries.
         try
         {
             Win32StorageInterop.EnableProcessPrivilege("SeRestorePrivilege");
@@ -423,8 +431,6 @@ public static class NativeUefiAndBcdRegistryEngine
                 VerifyOwnedBcdObject(hObjects, osLoaderGuid, isSdi: false);
             if (!string.IsNullOrWhiteSpace(sdiDeviceGuid))
                 VerifyOwnedBcdObject(hObjects, sdiDeviceGuid, isSdi: true);
-            if (!string.IsNullOrWhiteSpace(firmwareBootId) && firmwareBootId.StartsWith('{'))
-                VerifyOwnedBcdObject(hObjects, firmwareBootId, isSdi: false, isFirmwareApp: true);
 
             if (!string.IsNullOrWhiteSpace(osLoaderGuid))
             {
@@ -436,12 +442,6 @@ public static class NativeUefiAndBcdRegistryEngine
             if (!string.IsNullOrWhiteSpace(sdiDeviceGuid))
             {
                 DeleteKeyTreeBackupRestore(hObjects, sdiDeviceGuid);
-            }
-
-            if (!string.IsNullOrWhiteSpace(firmwareBootId) && firmwareBootId.StartsWith('{'))
-            {
-                RemoveGuidFromMultiSzElement(hObjects, FwBootMgrObjectGuid, ElemDisplayOrder, firmwareBootId);
-                DeleteKeyTreeBackupRestore(hObjects, firmwareBootId);
             }
 
             int flushError = Win32StorageInterop.RegFlushKey(hObjects);
@@ -900,7 +900,7 @@ public static class NativeUefiAndBcdRegistryEngine
         }
     }
 
-    private static void VerifyOwnedBcdObject(IntPtr objects, string id, bool isSdi, bool isFirmwareApp = false)
+    private static void VerifyOwnedBcdObject(IntPtr objects, string id, bool isSdi)
     {
         if (!Guid.TryParse(id, out Guid parsed) || parsed == Guid.Empty)
             throw new InvalidOperationException("Invalid BCD identifier in the installer manifest.");
@@ -927,14 +927,13 @@ public static class NativeUefiAndBcdRegistryEngine
                 throw new InvalidOperationException($"BCD entry {id} has an invalid object type.");
             int objectType = BinaryPrimitives.ReadInt32LittleEndian(raw);
             bool expectedType = isSdi ? objectType == BcdTypeDeviceObject
-                : isFirmwareApp ? objectType != 0 && objectType != BcdTypeOsLoader && objectType != BcdTypeDeviceObject
                 : objectType == BcdTypeOsLoader;
             if (!expectedType)
                 throw new InvalidOperationException($"BCD entry {id} changed type; it was not removed.");
         }
         finally { Win32StorageInterop.RegCloseKey(typeKey); }
 
-        if (!isSdi && !isFirmwareApp)
+        if (!isSdi)
         {
             // A normal Windows OS loader must never be removed simply because it was
             // renamed to SWBI. SWBI's own ramdisk loader has WinPE=true.

@@ -173,6 +173,8 @@ public sealed class CleanupViewModel : ObservableObject
                     $"Clean! No temporary '{SwbiBrand.PartitionVolumeLabel}' partition or '{SwbiBrand.BootChooserEntryName}' boot entry exists on this system.",
                 CleanupSafetyState.BlockedActiveDependency =>
                     "Blocked: Cannot verify independent boot or inspect the active BCD. Read the safety checks before continuing.",
+                CleanupSafetyState.BlockedAmbiguousPartition when result.SafetyChecks.Any(c => c.Id == "cleanup-firmware-mirror") =>
+                    "Blocked: An SWBI-named BCD firmware-view GUID may mirror a UEFI slot; read its device/path before any cleanup. Nothing was changed.",
                 CleanupSafetyState.BlockedAmbiguousPartition when result.SafetyChecks.Any(c => c.Id == "cleanup-firmware-ownership") =>
                     "Blocked: The SWBI-named UEFI entry has an unverified EFI path or slot; do not remove it by name alone.",
                 CleanupSafetyState.BlockedAmbiguousPartition =>

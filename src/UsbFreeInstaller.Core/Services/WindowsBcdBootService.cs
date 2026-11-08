@@ -93,14 +93,20 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
         {
             state.ExistingUsbFreeLoaderGuid is { } loader ? $"BCD loader {loader}" : null,
             state.ExistingUsbFreeSdiGuid is { } sdi ? $"BCD SDI {sdi}" : null,
-            state.ExistingFirmwareBootGuid is { } firmware ? $"UEFI/firmware entry {firmware}" : null
+            state.ExistingFirmwareBootGuid is { } firmware
+                ? firmware.StartsWith("UEFI:Boot", StringComparison.OrdinalIgnoreCase)
+                    ? $"UEFI firmware slot {firmware}"
+                    : $"BCD firmware-view object {firmware}"
+                : null
         }.Where(s => s is not null).Select(s => s!).ToArray();
         if (existing.Length > 0)
             return "Existing SWBI boot entries (" + string.Join(", ", existing) + ") must be inspected before preparing another boot. " +
-                (state.FirmwareEntryVerified ? string.Empty
+                (state.ExistingFirmwareBootGuid is { } id && Guid.TryParse(id, out _)
+                    ? "A BCD firmware-view GUID may mirror a UEFI BootXXXX entry; it is NOT a verified firmware slot and cannot be removed automatically. "
+                    : state.FirmwareEntryVerified ? string.Empty
                     : "The named UEFI entry has an unverified EFI device path or unsupported slot and cannot be removed automatically. ") +
                 "Do not retry preparation or delete boot entries manually. In '2. Post-Install Cleanup', click Inspect; " +
-                "if there is no installer partition, the app can remove only verified SWBI boot entries after your confirmation.";
+                "only verified SWBI entries can be cleaned up after your confirmation.";
 
         if (state.HasPendingBootSequence)
             return "Another one-time Windows Boot Manager sequence is already pending. SWBI will not replace it. " +

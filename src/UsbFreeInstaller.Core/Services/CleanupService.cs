@@ -100,6 +100,40 @@ public sealed class CleanupService
 
         InstallerManifest? manifest = simulatedManifest ?? TryReadManifestFromPartition(candidate);
 
+        // Windows can represent a UEFI BootXXXX variable as a BCD "Firmware Application"
+        // object with a completely different GUID. That GUID is NOT an owned raw firmware
+        // slot. Removing its registry mirror could leave BootOrder/BootNext unchanged (or
+        // remove a still-needed entry). Do not offer automatic deletion based on its title.
+        string? firmwareBcdId = Guid.TryParse(bcdState.ExistingFirmwareBootGuid, out _)
+            ? bcdState.ExistingFirmwareBootGuid
+            : Guid.TryParse(manifest?.BcdFirmwareBootGuid, out _)
+                ? manifest!.BcdFirmwareBootGuid
+                : null;
+        if (firmwareBcdId is not null)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-firmware-mirror",
+                Category = "Boot",
+                Title = "BCD Firmware-View GUID Requires Manual Review",
+                Severity = CheckSeverity.Blocker,
+                Summary = $"SWBI-named BCD firmware object {firmwareBcdId} is not a verified UEFI BootXXXX slot. Its title alone does not prove which firmware entry owns it. Nothing will be removed or resized.",
+                RemediationHint = $"Use read-only 'bcdedit /enum {firmwareBcdId} /v' and 'bcdedit /enum firmware /v' to identify its device/path and Boot Manager references. Do not delete the GUID or change BootOrder/BootNext until a trusted administrator maps it to an SWBI-owned firmware entry."
+            });
+            return new CleanupInspectionResult
+            {
+                State = CleanupSafetyState.BlockedAmbiguousPartition,
+                CurrentOsDiskNumber = targetDisk.DiskNumber,
+                CurrentOsPartitionNumber = osPart.PartitionNumber,
+                CurrentBootUsesRamdisk = bcdState.CurrentBootIsRamdisk,
+                CurrentBootDependsOnInstaller = bcdState.CurrentBootIsRamdisk,
+                CandidatePartition = candidate,
+                DiscoveredManifest = manifest,
+                OrphanedBcdFirmwareGuid = firmwareBcdId,
+                SafetyChecks = checks
+            };
+        }
+
         if (!bcdState.FirmwareEntryVerified)
         {
             checks.Add(new SystemCheckItem
