@@ -1260,7 +1260,7 @@
                                         Command="{Binding CopyBootReportCommand}"
                                         Style="{StaticResource SecondaryButtonStyle}" />
                             </Grid>
-                            <TextBlock Text="Includes the BCD device/path and firmware/Boot Manager views when Windows permits reading them. It never authorizes deleting a BCD firmware GUID. Review device identifiers before sharing."
+                            <TextBlock Text="Includes the BCD device/path, Boot Manager views, and a bounded read of raw BootOrder/BootNext/BootCurrent and BootXXXX slots when Windows permits. It cannot prove that a BCD GUID owns a firmware slot or authorize deletion. Review device identifiers before sharing."
                                        Foreground="#FDE68A"
                                        TextWrapping="Wrap"
                                        Margin="0,0,0,8" />

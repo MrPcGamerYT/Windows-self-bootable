@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 using UsbFreeInstaller.Core.Models;
+using UsbFreeInstaller.Core.Services.Native;
 
 namespace UsbFreeInstaller.Core.Services;
 
@@ -79,25 +80,45 @@ public sealed class WindowsReadOnlyBootRepairDiagnostics : IReadOnlyBootRepairDi
         if (executable is null)
         {
             report.AppendLine("\nThe system bcdedit.exe was unavailable. Run read-only 'bcdedit /enum firmware /v' and 'bcdedit /enum {bootmgr} /v' from an Administrator Command Prompt instead.");
-            return report.ToString();
+        }
+        else
+        {
+            foreach (BootQuery query in BuildQueries(inspection))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                report.AppendLine().AppendLine($"--- READ ONLY: bcdedit /enum {query.Identifier} /v ({query.Label}) ---");
+                try
+                {
+                    report.AppendLine(await RunQueryAsync(executable, query, cancellationToken).ConfigureAwait(false));
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    report.AppendLine("The read-only query timed out; no boot setting was changed. Inspect manually in an elevated Command Prompt.");
+                }
+                catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
+                {
+                    report.AppendLine($"Read-only query unavailable ({ex.GetType().Name}: {ex.Message}). No boot setting was changed.");
+                }
+            }
         }
 
-        foreach (BootQuery query in BuildQueries(inspection))
+        report.AppendLine().AppendLine("--- READ ONLY: raw EFI_GLOBAL BootXXXX variables (not BCD GUIDs) ---");
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            report.AppendLine().AppendLine($"--- READ ONLY: bcdedit /enum {query.Identifier} /v ({query.Label}) ---");
-            try
+            // Firmware calls are synchronous; keep a slow or unavailable firmware out
+            // of the WPF UI thread, especially when bcdedit.exe was unavailable.
+            string rawReport = await Task.Run(() =>
             {
-                report.AppendLine(await RunQueryAsync(executable, query, cancellationToken).ConfigureAwait(false));
-            }
-            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-            {
-                report.AppendLine("The read-only query timed out; no boot setting was changed. Inspect manually in an elevated Command Prompt.");
-            }
-            catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
-            {
-                report.AppendLine($"Read-only query unavailable ({ex.GetType().Name}: {ex.Message}). No boot setting was changed.");
-            }
+                if (!Win32StorageInterop.EnableProcessPrivilege("SeSystemEnvironmentPrivilege"))
+                    return "UEFI firmware-variable privilege unavailable. No raw BootXXXX conclusions can be drawn; nothing was changed.";
+                return RawUefiBootDiagnostics.Capture(new WindowsFirmwareVariableStore(), cancellationToken);
+            }, cancellationToken).ConfigureAwait(false);
+            report.AppendLine(rawReport);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
+        {
+            report.AppendLine($"Raw firmware-variable read unavailable ({ex.GetType().Name}: {ex.Message}). Do not infer that any SWBI-named BootXXXX entry is absent.");
         }
 
         return report.ToString();
