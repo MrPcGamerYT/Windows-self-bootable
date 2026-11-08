@@ -105,7 +105,86 @@ public sealed class WpfBindingAndViewModelTests
             AwaitWithDispatcher(vm.CleanupVm.InspectAsync());
             Assert.Equal(CleanupSafetyState.ReadyToClean, vm.CleanupVm.Inspection?.State);
             Assert.Null(vm.CleanupVm.Inspection?.CandidatePartition);
-            Assert.Equal("Remove Recognized SWBI Boot Entries Only", vm.CleanupVm.CleanupActionLabel);
+            Assert.Equal("Repair Verified SWBI Boot Entries (Boot Only)", vm.CleanupVm.CleanupActionLabel);
+        });
+    }
+
+    [Fact]
+    public void BootRepairAssistant_DiagnosesBlockedFirmwareGuidWithoutEnablingDeletion()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        RunOnStaThread(() =>
+        {
+            var scenario = SimulatedEnvironmentProvider.CreateHealthySingleDriveScenario();
+            var env = scenario.Environment with { IsSimulated = false, IsElevated = true };
+            const string firmwareView = "{aaaaaaaa-1111-4444-8888-000000000010}";
+            var boot = new StubBcdBootService
+            {
+                State = new ActiveBcdState(false, "partition=C:", "partition=C:",
+                    null, null, firmwareView)
+            };
+            var diagnostics = new StubReadOnlyBootRepairDiagnostics();
+            var cleanup = new CleanupService(new StubDiskInspector(env), new StubPartitionService(), boot,
+                new SafeRedactingLogger());
+            string? copied = null;
+            var vm = new CleanupViewModel(cleanup, () => ExecutionMode.Live, () => null,
+                diagnostics, text => copied = text);
+
+            Assert.True(vm.DiagnoseBootCommand.CanExecute(null));
+            Assert.False(vm.CanRunCleanup());
+            AwaitWithDispatcher(vm.DiagnoseBootAsync());
+            Assert.Equal(CleanupSafetyState.BlockedAmbiguousPartition, vm.Inspection?.State);
+            Assert.Equal("Boot Repair Blocked — Review Read-Only Report", vm.CleanupActionLabel);
+            Assert.Equal(firmwareView, diagnostics.LastInspected?.OrphanedBcdFirmwareGuid);
+            Assert.True(vm.HasBootRepairReport);
+            Assert.Contains("report ready", vm.StatusDetail, StringComparison.OrdinalIgnoreCase);
+            Assert.True(vm.CopyBootReportCommand.CanExecute(null));
+            vm.CopyBootReportCommand.Execute(null);
+            Assert.Equal(vm.BootRepairReport, copied);
+            vm.ConfirmedIndependentBoot = true;
+            Assert.False(vm.CanRunCleanup());
+            Assert.False(vm.ExecuteCleanupCommand.CanExecute(null));
+            AwaitWithDispatcher(vm.ExecuteCleanupAsync()); // Direct calls also cannot bypass review.
+            Assert.Equal(0, boot.RollbackCalls);
+
+            AwaitWithDispatcher(vm.InspectAsync());
+            Assert.False(vm.HasBootRepairReport);
+            Assert.False(vm.ConfirmedIndependentBoot);
+        });
+    }
+
+    [Fact]
+    public void BootRepairAssistant_RepairsOnlyVerifiedBootEntriesAfterIndependentBootConfirmation()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        RunOnStaThread(() =>
+        {
+            var scenario = SimulatedEnvironmentProvider.CreateHealthySingleDriveScenario();
+            var env = scenario.Environment with { IsSimulated = false, IsElevated = true };
+            var boot = new StubBcdBootService
+            {
+                State = new ActiveBcdState(false, "partition=C:", "partition=C:",
+                    "{11111111-1111-1111-1111-111111111111}",
+                    "{22222222-2222-2222-2222-222222222222}")
+            };
+            var diagnostics = new StubReadOnlyBootRepairDiagnostics();
+            var cleanup = new CleanupService(new StubDiskInspector(env), new StubPartitionService(), boot,
+                new SafeRedactingLogger());
+            var vm = new CleanupViewModel(cleanup, () => ExecutionMode.Live, () => null, diagnostics);
+
+            AwaitWithDispatcher(vm.DiagnoseBootAsync());
+            Assert.Equal(CleanupSafetyState.ReadyToClean, vm.Inspection?.State);
+            Assert.False(vm.CanRunCleanup());
+            AwaitWithDispatcher(vm.ExecuteCleanupAsync());
+            Assert.Equal(0, boot.RollbackCalls);
+            vm.ConfirmedIndependentBoot = true;
+            Assert.True(vm.CanRunCleanup());
+            AwaitWithDispatcher(vm.ExecuteCleanupAsync());
+            Assert.Equal(1, boot.RollbackCalls);
+            Assert.False(vm.HasBootRepairReport);
+            Assert.Null(vm.Inspection); // A repair requires another fresh inspection before retrying.
         });
     }
 
@@ -305,6 +384,12 @@ public sealed class WpfBindingAndViewModelTests
                     // Test Cleanup tab on each scenario
                     vm.SelectCleanupTabCommand.Execute(null);
                     AwaitWithDispatcher(vm.CleanupVm.InspectAsync());
+                    if (sim == vm.SimulationScenarios[0])
+                    {
+                        AwaitWithDispatcher(vm.CleanupVm.DiagnoseBootAsync());
+                        PumpDispatcher(window);
+                        Assert.Contains("SIMULATION ONLY", vm.CleanupVm.BootRepairReport);
+                    }
                     vm.CleanupVm.ConfirmedIndependentBoot = true;
                     if (vm.CleanupVm.CanRunCleanup())
                     {
@@ -521,9 +606,21 @@ public sealed class WpfBindingAndViewModelTests
             Task.CompletedTask;
     }
 
+    private sealed class StubReadOnlyBootRepairDiagnostics : IReadOnlyBootRepairDiagnostics
+    {
+        public CleanupInspectionResult? LastInspected { get; private set; }
+
+        public Task<string> CaptureAsync(CleanupInspectionResult inspection, CancellationToken cancellationToken = default)
+        {
+            LastInspected = inspection;
+            return Task.FromResult($"READ ONLY: inspected {inspection.OrphanedBcdFirmwareGuid}; no boot settings changed.");
+        }
+    }
+
     private sealed class StubBcdBootService : IBcdBootService
     {
         public ActiveBcdState State { get; init; } = new(false, "partition=C:", "partition=C:", null, null, null);
+        public int RollbackCalls { get; private set; }
 
         public Task<BcdProvisionResult> ConfigureOneTimeWinPeBootAsync(
             string installerDriveLetter,
@@ -537,8 +634,11 @@ public sealed class WpfBindingAndViewModelTests
             string? osLoaderGuid,
             string? sdiDeviceGuid,
             CancellationToken cancellationToken = default,
-            string? firmwareBootGuid = null) =>
-            Task.CompletedTask;
+            string? firmwareBootGuid = null)
+        {
+            RollbackCalls++;
+            return Task.CompletedTask;
+        }
 
         public Task<ActiveBcdState> InspectActiveBcdAsync(CancellationToken cancellationToken = default) =>
             Task.FromResult(State);

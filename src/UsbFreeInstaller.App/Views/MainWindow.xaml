@@ -1170,7 +1170,7 @@
                                 <TextBlock Text="SWBI Cleanup — Post-Install or Orphaned Boot Entry"
                                            FontSize="16"
                                            FontWeight="Bold" />
-                                <TextBlock Text="Use after Windows installs, or before retrying preparation if an old SWBI boot entry remains but the installer partition was already rolled back. First inspect without changing anything; never remove an unfamiliar boot entry or an unverified partition."
+                                <TextBlock Text="Use after Windows installs, or before retrying preparation if an old SWBI boot entry remains but the installer partition was already rolled back. Inspect or diagnose without changing anything; a safety block does not mean boot files are corrupted. Repair is available only for verified SWBI-owned entries, never an unfamiliar boot entry or an unverified partition."
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            FontSize="12.5"
                                            TextWrapping="Wrap"
@@ -1184,11 +1184,15 @@
                                            TextWrapping="Wrap"
                                            Margin="0,4,0,0" />
                             </StackPanel>
-                            <Button Grid.Column="1"
-                                    Content="↻  Inspect SWBI State (Read-Only)"
-                                    Command="{Binding InspectCommand}"
-                                    Style="{StaticResource SecondaryButtonStyle}"
-                                    VerticalAlignment="Top" />
+                            <StackPanel Grid.Column="1" VerticalAlignment="Top">
+                                <Button Content="↻  Inspect SWBI State (Read-Only)"
+                                        Command="{Binding InspectCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}" />
+                                <Button Content="Diagnose SWBI Boot Issue (Read-Only)"
+                                        Command="{Binding DiagnoseBootCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}"
+                                        Margin="0,8,0,0" />
+                            </StackPanel>
                         </Grid>
                     </Border>
 
@@ -1235,6 +1239,46 @@
                                     </DataTemplate>
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorderStyle}"
+                            Visibility="{Binding HasBootRepairReport, Converter={StaticResource BoolToVis}}">
+                        <StackPanel>
+                            <Grid Margin="0,0,0,8">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Grid.Column="0"
+                                           Text="SWBI Boot Repair Assessment — Read Only"
+                                           FontWeight="SemiBold"
+                                           FontSize="13.5"
+                                           VerticalAlignment="Center" />
+                                <Button Grid.Column="1"
+                                        Content="Copy Boot Report"
+                                        Command="{Binding CopyBootReportCommand}"
+                                        Style="{StaticResource SecondaryButtonStyle}" />
+                            </Grid>
+                            <TextBlock Text="Includes the BCD device/path and firmware/Boot Manager views when Windows permits reading them. It never authorizes deleting a BCD firmware GUID. Review device identifiers before sharing."
+                                       Foreground="#FDE68A"
+                                       TextWrapping="Wrap"
+                                       Margin="0,0,0,8" />
+                            <TextBox Text="{Binding BootRepairReport, Mode=OneWay}"
+                                     IsReadOnly="True"
+                                     AcceptsReturn="True"
+                                     TextWrapping="NoWrap"
+                                     FontFamily="Consolas"
+                                     FontSize="11"
+                                     Background="#090F20"
+                                     Foreground="#CBD5E1"
+                                     BorderBrush="#334155"
+                                     BorderThickness="1"
+                                     Padding="8"
+                                     MinHeight="100"
+                                     MaxHeight="260"
+                                     VerticalScrollBarVisibility="Auto"
+                                     HorizontalScrollBarVisibility="Auto" />
                         </StackPanel>
                     </Border>
 

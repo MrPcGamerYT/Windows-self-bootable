@@ -3,11 +3,19 @@ param(
     [ValidateSet("win-x64", "win-arm64", "win-x86")]
     [string]$Runtime = "win-x64",
     [bool]$SelfContained = $true,
-    [string]$Version = "1.0.1",
+    [string]$Version = "",
     [string]$OutputExe = ""
 )
 
 $ErrorActionPreference = "Stop"
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $brandFile = Join-Path $PSScriptRoot 'src/UsbFreeInstaller.Core/Models/SwbiBrand.cs'
+    $brandSource = Get-Content -LiteralPath $brandFile -Raw
+    if ($brandSource -notmatch 'CurrentVersion\s*=\s*"([^"]+)"') {
+        throw "Could not determine the SWBI version from SwbiBrand.CurrentVersion."
+    }
+    $Version = $Matches[1]
+}
 $asmVer = "$Version.0"
 $scFlag = if ($SelfContained) { "true" } else { "false" }
 $flavorSuffix = if (-not $SelfContained) { "lightweight" } elseif ($Runtime -eq "win-x86") { "32bit" } else { "standalone" }

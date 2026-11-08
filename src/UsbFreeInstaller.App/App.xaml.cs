@@ -334,9 +334,11 @@ public partial class App : Application
                 }
             }
 
-            // Exercise Cleanup tab inspection + Dry-Run cleanup execution
+            // Exercise Cleanup tab inspection + read-only repair assessment + Dry-Run cleanup.
             vm.IsCleanupTabSelected = true;
-            await vm.CleanupVm.InspectAsync();
+            await vm.CleanupVm.DiagnoseBootAsync();
+            if (!vm.CleanupVm.BootRepairReport.Contains("SIMULATION ONLY", StringComparison.Ordinal))
+                _unhandledErrors.Enqueue("Boot repair assessment ran against live boot settings in simulated mode.");
             vm.CleanupVm.ConfirmedIndependentBoot = true;
             if (vm.CleanupVm.CanRunCleanup())
             {
