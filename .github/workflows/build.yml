@@ -36,22 +36,36 @@ jobs:
       - name: Build solution (Release)
         run: dotnet build UsbFreeWindowsInstaller.sln --configuration Release --no-restore
 
+      - name: Validate real wimgapi boot.wim round-trip on Windows
+        run: |
+          $wimOut = dotnet test tests/UsbFreeInstaller.Core.Tests/UsbFreeInstaller.Core.Tests.csproj --configuration Release --no-build --filter FullyQualifiedName~BootWimRoundTripWindowsTests --logger "console;verbosity=normal" --verbosity normal 2>&1
+          $wimExit = $LASTEXITCODE
+          $wimOut | ForEach-Object { Write-Host $_ }
+          if ($wimExit -ne 0) {
+            $errorDetails = (($wimOut | Select-Object -Last 22 | Out-String).Trim() -replace "\r?\n", " | ")
+            if ($errorDetails.Length -gt 3500) { $errorDetails = $errorDetails.Substring($errorDetails.Length - 3500) }
+            Write-Host "::error title=WinPE WIM Round-Trip Failed::$errorDetails"
+            exit $wimExit
+          }
+
       - name: Run Core & WPF UI/Binding unit tests
         run: |
-          $coreOut = dotnet test tests/UsbFreeInstaller.Core.Tests/UsbFreeInstaller.Core.Tests.csproj --configuration Release --no-build --verbosity normal 2>&1
+          $coreOut = dotnet test tests/UsbFreeInstaller.Core.Tests/UsbFreeInstaller.Core.Tests.csproj --configuration Release --no-build --logger "console;verbosity=quiet" --verbosity quiet 2>&1
           $coreExit = $LASTEXITCODE
           $coreOut | ForEach-Object { Write-Host $_ }
           if ($coreExit -ne 0) {
-            $errText = ($coreOut | Select-String -Pattern "Failed|Error|Exception|Assert|Actual|Expected" | Out-String).Trim() -replace "\r?\n", " | "
+            $errText = (($coreOut | Select-Object -Last 22 | Out-String).Trim() -replace "\r?\n", " | ")
+            if ($errText.Length -gt 3500) { $errText = $errText.Substring($errText.Length - 3500) }
             Write-Host "::error title=Core.Tests Failed::$errText"
             exit $coreExit
           }
 
-          $appOut = dotnet test tests/UsbFreeInstaller.App.Tests/UsbFreeInstaller.App.Tests.csproj --configuration Release --no-build --verbosity normal 2>&1
+          $appOut = dotnet test tests/UsbFreeInstaller.App.Tests/UsbFreeInstaller.App.Tests.csproj --configuration Release --no-build --logger "console;verbosity=quiet" --verbosity quiet 2>&1
           $appExit = $LASTEXITCODE
           $appOut | ForEach-Object { Write-Host $_ }
           if ($appExit -ne 0) {
-            $errText = ($appOut | Select-String -Pattern "Failed|Error|Exception|Assert|Actual|Expected|DataError" | Out-String).Trim() -replace "\r?\n", " | "
+            $errText = (($appOut | Select-Object -Last 22 | Out-String).Trim() -replace "\r?\n", " | ")
+            if ($errText.Length -gt 3500) { $errText = $errText.Substring($errText.Length - 3500) }
             Write-Host "::error title=App.Tests Failed::$errText"
             exit $appExit
           }

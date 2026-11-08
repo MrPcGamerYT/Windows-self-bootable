@@ -530,17 +530,16 @@ public static class NativeNtfsShrinkEngine
         RawDiskLayoutSnapshot layout = Win32StorageInterop.TryReadDiskLayout(diskHandle)
             ?? throw new InvalidOperationException($"Unable to read partition table on PhysicalDrive{diskNumber}.");
 
-        RawPartitionLayoutEntry osPart = layout.Partitions.FirstOrDefault(p => p.PartitionNumber == osPartitionNumber)
-            ?? throw new InvalidOperationException($"Partition {osPartitionNumber} not found on Disk {diskNumber}.");
-
-        // The partition number is captured during inspection and the installer partition is deleted in
-        // between, so re-numbering is possible. Require the caller's identity evidence before resizing.
-        if (expectedOsStartOffsetBytes > 0 && Math.Abs(osPart.StartingOffsetBytes - expectedOsStartOffsetBytes) > 65536)
-        {
-            throw new InvalidOperationException(
-                $"Partition {osPartitionNumber} on Disk {diskNumber} now starts at offset {osPart.StartingOffsetBytes}, " +
-                $"not at the expected {expectedOsStartOffsetBytes}. Refusing to extend a different partition.");
-        }
+        // Windows may renumber partitions after deleting the installer. Resolve by the
+        // inspected OS offset first, then use the *current* number in IOCTL_DISK_GROW_PARTITION.
+        RawPartitionLayoutEntry osPart = (expectedOsStartOffsetBytes > 0
+                ? layout.Partitions.SingleOrDefault(p => p.StartingOffsetBytes == expectedOsStartOffsetBytes)
+                : layout.Partitions.SingleOrDefault(p => p.PartitionNumber == osPartitionNumber))
+            ?? throw new InvalidOperationException(
+                $"The inspected OS partition (Disk {diskNumber}, offset {expectedOsStartOffsetBytes}) is missing or changed; nothing was extended.");
+        if (osPartitionNumber != osPart.PartitionNumber)
+            logger.Warn("NativeExtend", $"OS partition was renumbered ({osPartitionNumber} -> {osPart.PartitionNumber}); verified by start offset.");
+        osPartitionNumber = osPart.PartitionNumber;
 
         if (expectedOsPartitionGuid != Guid.Empty && osPart.GptPartitionId != expectedOsPartitionGuid)
         {
@@ -568,12 +567,6 @@ public static class NativeNtfsShrinkEngine
 
         long alignedMaxEnd = (maxEnd / oneMb) * oneMb;
         long bytesToGrow = alignedMaxEnd - osEnd;
-        if (bytesToGrow < oneMb)
-        {
-            logger.Info("NativeExtend", $"No adjacent unallocated space (>1 MB) after Partition {osPartitionNumber}.");
-            return;
-        }
-
         using SafeFileHandle volHandle = Win32StorageInterop.CreateFileW(
             $@"\\.\{clean}:",
             Win32StorageInterop.GENERIC_READ | Win32StorageInterop.GENERIC_WRITE,
@@ -593,42 +586,62 @@ public static class NativeNtfsShrinkEngine
 
         // The drive letter must still describe exactly the partition we are about to grow.
         if (!Win32StorageInterop.TryGetSingleVolumeDiskExtent(volHandle, out int volumeDisk, out long volumeStart, out long volumeLength) ||
-            volumeDisk != diskNumber ||
-            volumeStart != osPart.StartingOffsetBytes ||
-            volumeLength != osPart.PartitionLengthBytes)
+            volumeDisk != diskNumber || volumeStart != osPart.StartingOffsetBytes)
         {
             throw new InvalidOperationException(
                 $"{clean}: does not map to Disk {diskNumber} Partition {osPartitionNumber} " +
-                $"(offset {osPart.StartingOffsetBytes}, length {osPart.PartitionLengthBytes}). " +
-                "The partition table and volume mount points disagree; nothing was resized.");
+                $"(offset {osPart.StartingOffsetBytes}). The partition table and mount points disagree; nothing was resized.");
+        }
+
+        // IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS can report the previous length while partmgr
+        // updates after deleting a neighboring partition. Disk + start offset identify the
+        // volume; NTFS's own geometry (not IOCTL_DISK_GET_LENGTH_INFO) checks its true size.
+        if (volumeLength > osPart.PartitionLengthBytes + oneMb ||
+            !TryQueryNtfsGeometry(volHandle, out NtfsVolumeGeometry before) ||
+            before.TotalSectors <= 0 || before.BytesPerSector <= 0)
+            throw new InvalidOperationException($"Cannot verify NTFS geometry on {clean}: before extending; nothing was resized.");
+
+        long fileSystemBeforeBytes = checked(before.TotalSectors * before.BytesPerSector);
+        if (fileSystemBeforeBytes > osPart.PartitionLengthBytes + before.BytesPerCluster)
+            throw new InvalidOperationException($"NTFS on {clean}: is larger than its partition; refusing to resize.");
+        int clusterBytes = before.BytesPerCluster;
+        long targetPartitionLength = osPart.PartitionLengthBytes + Math.Max(0, bytesToGrow);
+        if (bytesToGrow < oneMb && NtfsExtendSafety.IsFileSystemExtended(
+                targetPartitionLength, clusterBytes, fileSystemBeforeBytes))
+        {
+            logger.Info("NativeExtend", $"No adjacent space or unfinished NTFS extend on Partition {osPartitionNumber}.");
+            return;
         }
 
         byte[] growIn = new byte[16];
         BinaryPrimitives.WriteInt32LittleEndian(growIn.AsSpan(0, 4), osPartitionNumber);
         BinaryPrimitives.WriteInt64LittleEndian(growIn.AsSpan(8, 8), bytesToGrow);
 
-        if (!Win32StorageInterop.DeviceIoControl(
-                diskHandle,
-                Win32StorageInterop.IOCTL_DISK_GROW_PARTITION,
-                growIn,
-                growIn.Length,
-                null,
-                0,
-                out _,
-                IntPtr.Zero))
+        if (bytesToGrow >= oneMb)
         {
-            int err = Marshal.GetLastWin32Error();
-            throw new Win32Exception(err, $"IOCTL_DISK_GROW_PARTITION (+{bytesToGrow}) failed (Win32 error {err}).");
+            if (!Win32StorageInterop.DeviceIoControl(
+                    diskHandle,
+                    Win32StorageInterop.IOCTL_DISK_GROW_PARTITION,
+                    growIn,
+                    growIn.Length,
+                    null,
+                    0,
+                    out _,
+                    IntPtr.Zero))
+            {
+                int err = Marshal.GetLastWin32Error();
+                throw new Win32Exception(err, $"IOCTL_DISK_GROW_PARTITION (+{bytesToGrow}) failed (Win32 error {err}).");
+            }
+            Win32StorageInterop.TryControlCode(diskHandle, Win32StorageInterop.IOCTL_DISK_UPDATE_PROPERTIES);
+        }
+        else
+        {
+            // Previous cleanup may have enlarged the partition but failed to extend NTFS.
+            // Retry only the filesystem step, after verifying disk and start offset above.
+            logger.Warn("NativeExtend", $"Partition is already large but NTFS on {clean}: is smaller; retrying FSCTL_EXTEND_VOLUME without changing the partition table.");
         }
 
-        Win32StorageInterop.TryControlCode(diskHandle, Win32StorageInterop.IOCTL_DISK_UPDATE_PROPERTIES);
-
-        int bytesPerSector = Win32StorageInterop.QueryLogicalSectorSize(volHandle);
-        long targetPartitionLength = osPart.PartitionLengthBytes + bytesToGrow;
-        int clusterBytes = TryQueryNtfsGeometry(volHandle, out NtfsVolumeGeometry geometry) && geometry.BytesPerCluster > 0
-            ? geometry.BytesPerCluster
-            : 4096;
-
+        int bytesPerSector = before.BytesPerSector;
         long targetTotalSectors = targetPartitionLength / bytesPerSector;
         bool filesystemExtended = TryExtendFileSystem(volHandle, targetTotalSectors, out int extendError);
 
@@ -648,20 +661,22 @@ public static class NativeNtfsShrinkEngine
         }
 
         Win32StorageInterop.TryControlCode(volHandle, Win32StorageInterop.IOCTL_DISK_UPDATE_PROPERTIES);
-        long verifiedVolumeLength = Win32StorageInterop.QueryDeviceLengthBytes(volHandle);
-        if (verifiedVolumeLength < targetPartitionLength - clusterBytes)
+        if (!TryQueryNtfsGeometry(volHandle, out NtfsVolumeGeometry after))
+            throw new InvalidOperationException($"Cannot re-read NTFS geometry after extending {clean}:; inspect the volume before retrying.");
+        long verifiedFileSystemBytes = checked(after.TotalSectors * after.BytesPerSector);
+        if (!NtfsExtendSafety.IsFileSystemExtended(targetPartitionLength, clusterBytes, verifiedFileSystemBytes))
         {
             throw new InvalidOperationException(
-                $"Filesystem extension on {clean}: could not be verified. The volume reports " +
-                $"{verifiedVolumeLength / oneMb:N0} MB inside a {targetPartitionLength / oneMb:N0} MB partition. " +
-                "The reclaimed space is not usable; run 'chkdsk /f' on the volume and re-run Post-Install Cleanup.");
+                $"NTFS extension on {clean}: could not be verified. The filesystem reports " +
+                $"{verifiedFileSystemBytes / oneMb:N0} MB inside a {targetPartitionLength / oneMb:N0} MB partition. " +
+                "The reclaimed space is not usable; inspect in Disk Management and run chkdsk before retrying.");
         }
 
         logger.Info(
             "NativeExtend",
             $"Verified extend on Disk {diskNumber} Partition {osPartitionNumber} ({clean}:): " +
-            $"volume {osPart.PartitionLengthBytes / oneMb:N0} MB -> {verifiedVolumeLength / oneMb:N0} MB " +
-            $"(+{bytesToGrow / oneMb:N0} MB of adjacent unallocated space reclaimed via native kernel IOCTLs).");
+            $"NTFS {fileSystemBeforeBytes / oneMb:N0} MB -> {verifiedFileSystemBytes / oneMb:N0} MB " +
+            $"(+{Math.Max(0, bytesToGrow) / oneMb:N0} MB of adjacent space reclaimed via native kernel IOCTLs).");
     }
 
     private static bool TryExtendFileSystem(SafeFileHandle volumeHandle, long newTotalSectors, out int win32Error)

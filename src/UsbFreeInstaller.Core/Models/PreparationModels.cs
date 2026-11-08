@@ -45,7 +45,9 @@ public sealed record InstallerManifest
     public const string BcdEntryDescription = SwbiBrand.BootChooserEntryName;
     public const string BcdSdiDescription = SwbiBrand.BcdSdiDeviceName;
 
-    public string SchemaVersion { get; init; } = "1.3";
+    // 1.4: UEFI now records the backed-up system BCD ramdisk loader/SDI GUIDs, not a firmware BootNext slot.
+    // Cleanup still reads 1.3 UEFI manifests containing BcdFirmwareBootGuid.
+    public string SchemaVersion { get; init; } = "1.4";
     public FirmwareMode? BootFirmwareMode { get; init; }
     public string ToolName { get; init; } = SwbiBrand.AsciiTitle;
     public string ToolVersion { get; init; } = SwbiBrand.CurrentVersion;
@@ -115,6 +117,7 @@ public sealed record PreparationResult
     public InstallerManifest? CreatedManifest { get; init; }
     public SetupPartitionGuide? SetupGuide { get; init; }
     public string? LogFilePath { get; init; }
+    public string? StorageDriverWarning { get; init; }
     public IReadOnlyList<string> PlannedOrExecutedActions { get; init; } = Array.Empty<string>();
     public string? ErrorMessage { get; init; }
 }

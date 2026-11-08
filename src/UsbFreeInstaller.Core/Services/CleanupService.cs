@@ -48,6 +48,28 @@ public sealed class CleanupService
         DiskSnapshot? targetDisk = env.TargetDisk;
         PartitionSnapshot? osPart = env.TargetOsPartition;
 
+        if (!bcdState.InspectionSucceeded)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-bcd-inspection",
+                Category = "Boot",
+                Title = "Active BCD Inspection Failed — No Cleanup Allowed",
+                Severity = CheckSeverity.Blocker,
+                Summary = "Could not inspect the active system BCD. Absence of entries cannot be assumed; no boot or partition changes are allowed.",
+                RemediationHint = "Run SWBI as Administrator and inspect the log; do not delete any boot entries or partitions manually."
+            });
+            return new CleanupInspectionResult
+            {
+                State = CleanupSafetyState.BlockedActiveDependency,
+                CurrentOsDiskNumber = env.TargetDiskNumber,
+                CurrentOsPartitionNumber = env.TargetOsPartitionNumber,
+                CurrentBootUsesRamdisk = bcdState.CurrentBootIsRamdisk,
+                CurrentBootDependsOnInstaller = true,
+                SafetyChecks = checks
+            };
+        }
+
         if (targetDisk is null || osPart is null)
         {
             checks.Add(new SystemCheckItem
@@ -81,14 +103,20 @@ public sealed class CleanupService
         // New manifests record exactly one boot mechanism. Never infer an unrelated entry
         // from the current system when that manifest deliberately left a field empty.
         bool recordedMode = manifest?.BootFirmwareMode is not null;
+        // 1.3 UEFI manifests used a firmware BootNext slot. Newer UEFI manifests use the
+        // backed-up system BCD ramdisk (like BIOS), so cleanup must accept *either* path,
+        // never infer unrelated BCD entries, and never delete both for one manifest.
+        bool uefiBcd = manifest?.BootFirmwareMode == FirmwareMode.Uefi &&
+            string.IsNullOrWhiteSpace(manifest.BcdFirmwareBootGuid);
+        bool usesBcd = manifest?.BootFirmwareMode == FirmwareMode.LegacyBios || uefiBcd;
         string? loaderGuid = recordedMode
-            ? manifest?.BootFirmwareMode == FirmwareMode.LegacyBios ? manifest.BcdOsLoaderGuid : null
+            ? usesBcd ? manifest?.BcdOsLoaderGuid : null
             : manifest?.BcdOsLoaderGuid ?? bcdState.ExistingUsbFreeLoaderGuid;
         string? sdiGuid = recordedMode
-            ? manifest?.BootFirmwareMode == FirmwareMode.LegacyBios ? manifest.BcdSdiDeviceGuid : null
+            ? usesBcd ? manifest?.BcdSdiDeviceGuid : null
             : manifest?.BcdSdiDeviceGuid ?? bcdState.ExistingUsbFreeSdiGuid;
         string? firmwareGuid = recordedMode
-            ? manifest?.BootFirmwareMode == FirmwareMode.Uefi ? manifest.BcdFirmwareBootGuid : null
+            ? uefiBcd ? null : manifest?.BootFirmwareMode == FirmwareMode.Uefi ? manifest.BcdFirmwareBootGuid : null
             : manifest?.BcdFirmwareBootGuid ?? bcdState.ExistingFirmwareBootGuid;
 
         bool bootDependsOnCandidate = bcdState.CurrentBootIsRamdisk;
@@ -189,7 +217,7 @@ public sealed class CleanupService
                     Severity = CheckSeverity.Blocker,
                     Summary =
                         $"Partition {candidate.PartitionNumber} is labeled '{candidate.Label}', but a matching '{SwbiBrand.ManifestFileName}' was not verified.",
-                    RemediationHint = $"Ensure the partition has a drive letter assigned so SWBI can verify '{SwbiBrand.ManifestFileName}'; SWBI never deletes a partition based on label alone."
+                    RemediationHint = $"Inspect the exact volume and verify '{SwbiBrand.ManifestFileName}' and its GPT GUID or MBR disk signature/offset. SWBI reads matching volume-GUID paths without assigning a drive letter and never deletes a partition based on its label alone."
                 });
 
                 return new CleanupInspectionResult
@@ -210,11 +238,15 @@ public sealed class CleanupService
 
             bool requiresRecordedMode = manifest is not null &&
                 (!Version.TryParse(manifest.SchemaVersion, out Version? schema) || schema >= new Version(1, 3));
+            bool validBcdPair = Guid.TryParse(loaderGuid, out Guid loaderId) && loaderId != Guid.Empty &&
+                Guid.TryParse(sdiGuid, out Guid sdiId) && sdiId != Guid.Empty && loaderId != sdiId;
             bool incompleteRecordedBoot = manifest?.BootFirmwareMode switch
             {
-                FirmwareMode.Uefi => !UefiBootRegistration.TryParseFirmwareId(firmwareGuid, out _),
-                FirmwareMode.LegacyBios => !Guid.TryParse(loaderGuid, out Guid loaderId) || loaderId == Guid.Empty ||
-                    !Guid.TryParse(sdiGuid, out Guid sdiId) || sdiId == Guid.Empty || loaderId == sdiId,
+                FirmwareMode.Uefi when uefiBcd => !validBcdPair,
+                FirmwareMode.Uefi => !UefiBootRegistration.TryParseFirmwareId(firmwareGuid, out _) ||
+                    !string.IsNullOrWhiteSpace(manifest?.BcdOsLoaderGuid) ||
+                    !string.IsNullOrWhiteSpace(manifest?.BcdSdiDeviceGuid),
+                FirmwareMode.LegacyBios => !validBcdPair || !string.IsNullOrWhiteSpace(manifest?.BcdFirmwareBootGuid),
                 not null => true,
                 _ => requiresRecordedMode // Pre-1.3 manifests did not record a firmware mode.
             };
@@ -263,6 +295,19 @@ public sealed class CleanupService
                 Title = $"Temporary '{SwbiBrand.BootChooserEntryName}' Boot Entries Detected",
                 Severity = CheckSeverity.Info,
                 Summary = $"Will remove BCD loader {loaderGuid ?? "(none)"}, SDI {sdiGuid ?? "(none)"}, and UEFI F12 entry {firmwareGuid ?? "(none)"}."
+            });
+        }
+
+        if (candidate is null)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-boot-only",
+                Category = "Recovery",
+                Title = "Orphaned Boot Entry — No Installer Partition",
+                Severity = CheckSeverity.Warning,
+                Summary = "No SWBI-SETUP partition was found on the Windows disk. Cleanup will only remove the identified SWBI boot entries; C: and all partitions stay untouched.",
+                RemediationHint = "Review the identifiers above and confirm the current Windows boots independently. SWBI saves a fresh active-BCD backup and verifies entry ownership before removal. If anything is unfamiliar, stop and inspect the log instead."
             });
         }
 
@@ -401,14 +446,54 @@ public sealed class CleanupService
                 PartitionDeleted = willDeletePart,
                 OsPartitionExtended = willExtendOs,
                 ReclaimedBytes = willExtendOs ? (inspection.Adjacency?.ReclaimableBytes ?? 0L) : 0L,
-                Summary = willExtendOs
-                    ? $"[Dry-Run] Verified removal of '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition and extension of C: (+{inspection.Adjacency!.ReclaimableDisplay})."
-                    : $"[Dry-Run] Verified removal of '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition (unallocated space left intact)."
+                Summary = !willDeletePart
+                    ? "[Dry-Run] Would remove the identified SWBI boot entries only; no installer partition exists and C: would not be changed."
+                    : willExtendOs
+                        ? $"[Dry-Run] Would remove '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition and extend C: (+{inspection.Adjacency!.ReclaimableDisplay})."
+                        : $"[Dry-Run] Would remove '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition (unallocated space left intact)."
             };
         }
 
+        bool bootEntriesRemoved = false;
+        bool deletionAttempted = false;
+        bool partitionDeleted = false;
+        bool osExtended = false;
         try
         {
+            // The user may have left this screen open while another operation changed BCD
+            // or disk layout. Re-inspect from the actual machine immediately before mutation;
+            // an old orphaned GUID must never be replayed against a new boot entry.
+            SystemEnvironmentSnapshot currentEnv = await _diskInspector.InspectEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+            CleanupInspectionResult current = await InspectAsync(currentEnv,
+                currentEnv.IsSimulated ? inspection.DiscoveredManifest : null,
+                cancellationToken).ConfigureAwait(false);
+            PartitionSnapshot? expectedPart = inspection.CandidatePartition;
+            PartitionSnapshot? currentPart = current.CandidatePartition;
+            bool samePartition = expectedPart is null && currentPart is null ||
+                expectedPart is not null && currentPart is not null &&
+                expectedPart.DiskNumber == currentPart.DiskNumber &&
+                expectedPart.PartitionNumber == currentPart.PartitionNumber &&
+                expectedPart.OffsetBytes == currentPart.OffsetBytes &&
+                expectedPart.SizeBytes == currentPart.SizeBytes &&
+                string.Equals(expectedPart.PartitionGuid, currentPart.PartitionGuid, StringComparison.OrdinalIgnoreCase);
+            bool sameBoot = string.Equals(inspection.OrphanedBcdLoaderGuid, current.OrphanedBcdLoaderGuid, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(inspection.OrphanedBcdSdiGuid, current.OrphanedBcdSdiGuid, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(inspection.OrphanedBcdFirmwareGuid, current.OrphanedBcdFirmwareGuid, StringComparison.OrdinalIgnoreCase);
+            if (!current.CanExecuteCleanup || !samePartition || !sameBoot ||
+                current.CurrentOsDiskNumber != inspection.CurrentOsDiskNumber ||
+                current.CurrentOsPartitionNumber != inspection.CurrentOsPartitionNumber ||
+                current.CurrentOsPartitionOffsetBytes != inspection.CurrentOsPartitionOffsetBytes)
+            {
+                _logger.Warn("Cleanup", "The boot/disk state changed since inspection; refusing to remove stale boot entries or partitions.");
+                return new CleanupExecutionResult
+                {
+                    Succeeded = false,
+                    Mode = ExecutionMode.Live,
+                    Summary = "Boot or disk state changed since the last inspection. Nothing was removed; inspect again before retrying.",
+                    ErrorMessage = "Stale cleanup inspection."
+                };
+            }
+
             if (willRemoveBcd)
             {
                 await _bcdBootService.RollbackBcdEntriesAsync(
@@ -416,15 +501,18 @@ public sealed class CleanupService
                     inspection.OrphanedBcdSdiGuid,
                     cancellationToken,
                     inspection.OrphanedBcdFirmwareGuid).ConfigureAwait(false);
+                bootEntriesRemoved = true;
             }
 
             if (willDeletePart && inspection.CandidatePartition is not null)
             {
+                deletionAttempted = true;
                 await _partitionService.DeleteInstallerPartitionAsync(
                     inspection.CandidatePartition.DiskNumber,
                     inspection.CandidatePartition.PartitionNumber,
                     inspection.CandidatePartition.PartitionGuid,
                     cancellationToken).ConfigureAwait(false);
+                partitionDeleted = true;
             }
 
             if (willExtendOs)
@@ -434,30 +522,48 @@ public sealed class CleanupService
                     inspection.CurrentOsPartitionNumber,
                     cancellationToken,
                     inspection.CurrentOsPartitionOffsetBytes).ConfigureAwait(false);
+                osExtended = true;
             }
 
-            long reclaimed = willExtendOs ? (inspection.Adjacency?.ReclaimableBytes ?? 0L) : 0L;
+            long reclaimed = osExtended ? (inspection.Adjacency?.ReclaimableBytes ?? 0L) : 0L;
             return new CleanupExecutionResult
             {
                 Succeeded = true,
                 Mode = ExecutionMode.Live,
-                BcdEntriesRemoved = willRemoveBcd,
-                PartitionDeleted = willDeletePart,
-                OsPartitionExtended = willExtendOs,
+                BcdEntriesRemoved = bootEntriesRemoved,
+                PartitionDeleted = partitionDeleted,
+                OsPartitionExtended = osExtended,
                 ReclaimedBytes = reclaimed,
-                Summary = willExtendOs
-                    ? $"Removed temporary {SwbiBrand.ShortName} installer resources and extended C: by {ByteFormatting.FormatGb(reclaimed)}."
-                    : $"Removed temporary '{SwbiBrand.PartitionVolumeLabel}' partition and '{SwbiBrand.BootChooserEntryName}' boot entries. Freed space is now unallocated."
+                Summary = !willDeletePart
+                    ? "Removed the identified SWBI boot entries only. No partition was deleted and C: was not changed. Re-inspect before preparing again."
+                    : osExtended
+                        ? $"Removed temporary {SwbiBrand.ShortName} installer resources and extended C: by {ByteFormatting.FormatGb(reclaimed)}."
+                        : $"Removed temporary '{SwbiBrand.PartitionVolumeLabel}' partition and '{SwbiBrand.BootChooserEntryName}' boot entries. Freed space is now unallocated."
             };
         }
         catch (Exception ex)
         {
-            _logger.Error("Cleanup", $"Cleanup execution failed: {ex.Message}");
+            _logger.Error("Cleanup", $"Cleanup stopped (boot removed: {bootEntriesRemoved}; partition deleted: {partitionDeleted}; " +
+                $"C: extended: {osExtended}): {ex.Message}");
+            string stage = !willDeletePart
+                ? "Boot-only cleanup stopped. No partition was changed; some boot entries may already have been removed. Re-inspect before retrying. "
+                : partitionDeleted
+                ? $"The {SwbiBrand.PartitionVolumeLabel} partition WAS deleted, but C: extension failed. " +
+                  "Space may be unallocated or the partition may be larger than its NTFS filesystem. " +
+                  "Inspect both in Disk Management; do not delete any more partitions."
+                : deletionAttempted
+                    ? (bootEntriesRemoved ? "The boot entry was removed, but deletion" : "Deletion") +
+                      $" of {SwbiBrand.PartitionVolumeLabel} failed or could not be verified. " +
+                      "The partition may remain or already be unallocated; inspect the current layout before retrying."
+                    : $"Cleanup stopped before deleting {SwbiBrand.PartitionVolumeLabel}; the partition remains on disk. Re-inspect before retrying.";
             return new CleanupExecutionResult
             {
                 Succeeded = false,
                 Mode = ExecutionMode.Live,
-                Summary = $"Cleanup encountered an error: {ex.Message}",
+                BcdEntriesRemoved = bootEntriesRemoved,
+                PartitionDeleted = partitionDeleted,
+                OsPartitionExtended = osExtended,
+                Summary = $"{stage} Error: {ex.Message}",
                 ErrorMessage = ex.Message
             };
         }
@@ -465,35 +571,48 @@ public sealed class CleanupService
 
     private InstallerManifest? TryReadManifestFromPartition(PartitionSnapshot? candidate)
     {
-        if (candidate?.DriveLetter is not { Length: > 0 } letter)
+        if (candidate is null) return null;
+
+        // A GPT NO_DRIVE_LETTER attribute may survive a reboot. Read only a volume whose
+        // physical disk AND start offset match the inspected candidate; do not assign a
+        // new drive letter or treat a same-label/same-size partition as an ownership record.
+        var roots = new List<string>();
+        if (OperatingSystem.IsWindows() && candidate.OffsetBytes > 0)
         {
-            return null;
-        }
-
-        try
-        {
-            string root = $"{letter}:{Path.DirectorySeparatorChar}";
-            string primaryPath = Path.Combine(root, SwbiBrand.ManifestFileName);
-            string legacyPath = Path.Combine(root, SwbiBrand.LegacyManifestFileName);
-
-            string? chosenPath = File.Exists(primaryPath)
-                ? primaryPath
-                : File.Exists(legacyPath)
-                    ? legacyPath
-                    : null;
-
-            if (chosenPath is null)
+            foreach (RawVolumeBinding volume in Win32StorageInterop.EnumerateAllVolumes())
             {
-                return null;
+                if (volume.DiskNumber == candidate.DiskNumber &&
+                    volume.StartingOffsetBytes == candidate.OffsetBytes)
+                    roots.Add(volume.VolumeGuidPath);
             }
+        }
+        if (candidate.DriveLetter is { Length: > 0 } letter)
+            roots.Add($"{letter}:{Path.DirectorySeparatorChar}");
 
-            string json = File.ReadAllText(chosenPath);
-            return JsonSerializer.Deserialize<InstallerManifest>(json);
-        }
-        catch (Exception ex)
+        foreach (string root in roots.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            _logger.Warn("Cleanup", $"Failed to parse installer manifest on {letter}:: {ex.Message}");
-            return null;
+            try
+            {
+                InstallerManifest? manifest = ReadManifestFromRoot(root);
+                if (manifest is not null) return manifest;
+            }
+            catch (Exception ex)
+            {
+                _logger.Warn("Cleanup", $"Failed to read installer manifest on {root}: {ex.Message}");
+            }
         }
+        return null;
+    }
+
+    internal static InstallerManifest? ReadManifestFromRoot(string root)
+    {
+        string primary = Path.Combine(root, SwbiBrand.ManifestFileName);
+        string legacy = Path.Combine(root, SwbiBrand.LegacyManifestFileName);
+        string? path = File.Exists(primary) ? primary : File.Exists(legacy) ? legacy : null;
+        if (path is null) return null;
+
+        if (new FileInfo(path).Length > 1024 * 1024)
+            throw new InvalidDataException("Installer manifest exceeds the maximum supported size (1 MiB).");
+        return JsonSerializer.Deserialize<InstallerManifest>(File.ReadAllText(path));
     }
 }

@@ -1,5 +1,7 @@
 # SWBI v1.0.1 — Post-Merge Boot & Recovery Audit
 
+> **Historical audit (2026-11 update):** The active repair branch no longer requests UEFI `BootNext` for new preparations; it backs up system BCD and requests a one-time ramdisk entry through Windows Boot Manager on UEFI and BIOS. Old UEFI firmware entries still have a cleanup path. This audit's BootNext analysis remains relevant to older manifests but is not a description of new preparations. No affected-hardware boot has been validated.
+
 > **Note:** file:line references in this document point at the pre-fix tree (`21c96b6`). Several of the
 > findings below were fixed afterwards — see `docs/FIXES-safety-hardening.md` for what changed.
 

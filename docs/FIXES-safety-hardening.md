@@ -1,5 +1,7 @@
 # Safety Hardening — What Was Fixed
 
+> **Historical note (2026-11):** This document describes the earlier hardening pass and its CI result, not a physical-boot test or the current boot implementation. The active repair branch uses backed-up system BCD on UEFI as well as BIOS, instead of arming firmware `BootNext` to a Basic Data partition. Cleanup still supports old firmware-entry manifests. The new branch needs its own Windows CI and disposable VM / affected-hardware tests before claiming a fix.
+
 Fixes applied on top of `21c96b6` (v1.0.1), for the findings in:
 
 - `docs/AUDIT-v1.0.1-boot-and-recovery.md` (pre-merge findings, re-verified)

@@ -333,6 +333,9 @@ Provider="Intel"
             Assert.True(File.Exists(Path.Combine(outB, "iastorvd.inf_amd64_11223344", "iaStorVD.inf")));
             Assert.False(Directory.Exists(Path.Combine(outA, "storahci.inf_amd64_99887766")));
             Assert.True(File.Exists(Path.Combine(outA, "netwtw10.inf_amd64_55667788", "Netwtw10.sys")));
+            Assert.EndsWith("iaStorVD.inf", NativeDriverStoreScanner.FindActiveStorageDriverInf(outA, "iaStorVD"),
+                StringComparison.OrdinalIgnoreCase);
+            Assert.Null(NativeDriverStoreScanner.FindActiveStorageDriverInf(outA, "missingController"));
         }
         finally
         {

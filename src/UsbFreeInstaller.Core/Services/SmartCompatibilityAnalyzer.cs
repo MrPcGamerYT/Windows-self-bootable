@@ -104,13 +104,13 @@ public sealed partial class SmartCompatibilityAnalyzer
                 2 * 1024 * 1024,
                 false,
                 targetDisk.SupportsTrim,
-                $"Intel VMD / RAID controller detected (driver '{targetDisk.ControllerServiceName}'): automatically injecting active storage drivers into boot.wim + $WinPEDriver$ so Windows Setup detects C: without 'Load driver' prompts!"),
+                $"Intel VMD / RAID controller detected (service '{targetDisk.ControllerServiceName}'): SWBI will try to export the active controller package and rebuild boot.wim. Verify the pre-reboot result; some Windows Setup versions still need a matching vendor F6 driver loaded manually."),
 
             StorageDriveKind.EmmcOrUfs => (
                 1024 * 1024,
                 false,
                 targetDisk.SupportsTrim,
-                "Embedded eMMC/UFS storage detected: automatically exporting motherboard SDHCI/UFS & chipset drivers into $WinPEDriver$ + boot.wim so Setup sees internal flash storage."),
+                "Embedded eMMC/UFS storage detected: SWBI will try to stage compatible storage drivers. If WinPE cannot load them, Setup may not show internal flash; keep a matching vendor F6 package available."),
 
             StorageDriveKind.VirtualDisk => (
                 2 * 1024 * 1024,
@@ -232,7 +232,7 @@ public sealed partial class SmartCompatibilityAnalyzer
                 Category = "Cross-Bitness",
                 Title = $"Cross-Bitness Transition ({env.HostArchitecture} Host → {iso.Architecture} ISO)",
                 Severity = CheckSeverity.Pass,
-                Summary = $"Automatically skipping {env.HostArchitecture} host kernel driver injection so {iso.Architecture} Windows Setup boots cleanly with native {iso.Architecture} inbox storage drivers."
+                Summary = $"Skipping {env.HostArchitecture} host kernel drivers in the {iso.Architecture} WinPE image; incompatible bitness would prevent boot. Confirm that the target ISO has a matching storage driver or obtain a vendor F6 package for {iso.Architecture}."
             });
         }
 

@@ -126,7 +126,7 @@ public sealed class SetupGuideGenerator
         string bootRule = env.Firmware switch
         {
             FirmwareMode.LegacyBios => $"BOOT CHOOSER (legacy BIOS): Windows Boot Manager is requested to boot '{SwbiBrand.BootChooserEntryName}' once. Keep independent recovery media available.",
-            FirmwareMode.Uefi => $"BOOT CHOOSER (UEFI): BootNext requests '{SwbiBrand.BootChooserEntryName}' once; it may also appear in the F12/F8 firmware menu. Firmware can ignore or hide it, so keep recovery media available.",
+            FirmwareMode.Uefi => $"BOOT CHOOSER (UEFI): Your existing Windows Boot Manager requests '{SwbiBrand.BootChooserEntryName}' once using the backed-up system BCD. No firmware BootNext entry or ESP replacement is made. Keep independent recovery media available.",
             _ => "BOOT CHOOSER: Firmware mode was not identified; do not proceed until it is verified."
         };
 

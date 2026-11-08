@@ -47,17 +47,15 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
         FirmwareMode firmwareMode)
     {
         string cleanLetter = installerDriveLetter.TrimEnd(':', '\\', '/').ToUpperInvariant();
-        if (firmwareMode == FirmwareMode.Uefi)
-        {
-            // A UEFI run never modifies either BCD store or the host's bootmgfw.efi.
-            string firmwareId = _backend.RegisterUefi(cleanLetter, _logger);
-            return new BcdProvisionResult(null, null, null, firmwareId);
-        }
-
-        if (firmwareMode != FirmwareMode.LegacyBios)
+        if (firmwareMode is not (FirmwareMode.Uefi or FirmwareMode.LegacyBios))
         {
             throw new InvalidOperationException("Firmware mode is unknown; refusing to choose a boot mechanism.");
         }
+
+        // A BootNext entry pointing to an EFI file on a GPT Basic Data partition is not reliably
+        // bootable on real firmware: many machines only load EFI programs from an ESP. Use the
+        // *existing* Windows Boot Manager on both UEFI and BIOS, with a one-time BCD ramdisk
+        // sequence. We never replace the host ESP boot manager or modify the ISO's local BCD.
 
         string safeBackupDir = !string.IsNullOrWhiteSpace(backupDirectory)
             ? backupDirectory
@@ -68,18 +66,45 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
 
         if (!_backend.BackupSystemBcd(backupPath, _logger))
         {
-            throw new InvalidOperationException("Unable to back up the system BCD; refusing to change the legacy boot configuration.");
+            throw new InvalidOperationException("Unable to back up the active system BCD; refusing to change the boot configuration.");
         }
 
-        ActiveBcdState priorState = _backend.InspectSystemBcd();
-        if (priorState.ExistingUsbFreeLoaderGuid is not null || priorState.ExistingUsbFreeSdiGuid is not null)
-        {
-            throw new InvalidOperationException("Existing SWBI BCD entries must be inspected and cleaned up before preparing another legacy boot.");
-        }
+        // Keep this guard even though the orchestrator performs the same inspection before
+        // shrinking: a concurrent change between preflight and registration must still fail.
+        string? blocker = GetPreparationBlocker(_backend.InspectSystemBcd());
+        if (blocker is not null)
+            throw new InvalidOperationException(blocker);
 
-        (string sdiGuid, string loaderGuid) = _backend.RegisterLegacyBcd(cleanLetter, _logger);
+        (string sdiGuid, string loaderGuid) = _backend.RegisterRamdiskBcd(cleanLetter, firmwareMode, _logger);
         // Return the identifiers before any further work that could throw.
         return new BcdProvisionResult(backupPath, sdiGuid, loaderGuid, null);
+    }
+
+    /// <summary>Describes a read-only preflight failure; never infers that an old entry is safe to remove.</summary>
+    public static string? GetPreparationBlocker(ActiveBcdState state)
+    {
+        if (!state.InspectionSucceeded)
+            return "Cannot inspect the active system BCD; refusing to register a boot entry. Run as Administrator and inspect the SWBI log before retrying.";
+
+        if (state.CurrentBootIsRamdisk)
+            return "The current Windows session is booted from a ramdisk. Boot into the installed Windows desktop independently before preparing an installer.";
+
+        string[] existing = new[]
+        {
+            state.ExistingUsbFreeLoaderGuid is { } loader ? $"BCD loader {loader}" : null,
+            state.ExistingUsbFreeSdiGuid is { } sdi ? $"BCD SDI {sdi}" : null,
+            state.ExistingFirmwareBootGuid is { } firmware ? $"UEFI/firmware entry {firmware}" : null
+        }.Where(s => s is not null).Select(s => s!).ToArray();
+        if (existing.Length > 0)
+            return "Existing SWBI boot entries (" + string.Join(", ", existing) + ") must be inspected before preparing another boot. " +
+                "Do not retry preparation or delete boot entries manually. In '2. Post-Install Cleanup', click Inspect; " +
+                "if there is no installer partition, the app can remove only verified SWBI boot entries after your confirmation.";
+
+        if (state.HasPendingBootSequence)
+            return "Another one-time Windows Boot Manager sequence is already pending. SWBI will not replace it. " +
+                "Inspect the active BCD with an administrator before preparing; do not clear an unrelated boot request blindly.";
+
+        return null;
     }
 
     public Task RollbackBcdEntriesAsync(
@@ -88,19 +113,27 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
         CancellationToken cancellationToken = default,
         string? firmwareBootGuid = null)
     {
-        NativeUefiAndBcdRegistryEngine.RollbackRegistryAndUefiEntries(
-            osLoaderGuid,
-            sdiDeviceGuid,
-            firmwareBootGuid,
-            _logger);
-        return Task.CompletedTask;
+        if (osLoaderGuid is null && sdiDeviceGuid is null && firmwareBootGuid is null)
+            return Task.CompletedTask;
+
+        return Task.Run(() =>
+        {
+            // Cleanup needs its own backup: a previous preparation backup may not contain
+            // intervening Windows/firmware changes. Fail closed if it cannot be written.
+            string backupDir = SwbiWorkDirectory.EnsureSafeWorkDirectory("bcd-backups");
+            string backup = Path.Combine(backupDir,
+                $"swbi-pre-cleanup-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.bcd");
+            if (!_backend.BackupSystemBcd(backup, _logger))
+                throw new InvalidOperationException("Cannot back up the active BCD before SWBI boot-entry cleanup; nothing was removed.");
+
+            _logger.Info("NativeBCD", $"Saved pre-cleanup active BCD backup at '{backup}'. Verifying ownership before removing recorded entries.");
+            NativeUefiAndBcdRegistryEngine.RollbackRegistryAndUefiEntries(
+                osLoaderGuid, sdiDeviceGuid, firmwareBootGuid, _logger);
+        }, cancellationToken);
     }
 
-    public Task<ActiveBcdState> InspectActiveBcdAsync(
-        CancellationToken cancellationToken = default)
-    {
-        return Task.FromResult(NativeUefiAndBcdRegistryEngine.InspectSystemBcdFromRegistry());
-    }
+    public Task<ActiveBcdState> InspectActiveBcdAsync(CancellationToken cancellationToken = default) =>
+        Task.Run(_backend.InspectSystemBcd, cancellationToken);
 
     public Task RebootSystemAsync(
         int delaySeconds = 5,

@@ -28,7 +28,8 @@ public sealed record DriverHarvestSummary(
     int StorageDriverInfCount,
     int NetworkDriverInfCount,
     long TotalExportedBytes,
-    bool InjectedIntoBootWim);
+    bool InjectedIntoBootWim,
+    bool ActiveStorageDriverStaged = false);
 
 public interface IDriverHarvesterService
 {
@@ -37,7 +38,8 @@ public interface IDriverHarvesterService
         bool includeNetworkDrivers,
         bool injectStorageIntoBootWim,
         IProgress<DeploymentProgress>? progress = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default,
+        string? activeControllerServiceName = null);
 
     Task LaunchInPlaceUpgradeSetupAsync(
         string installerDriveLetter,
@@ -56,7 +58,9 @@ public sealed record ActiveBcdState(
     string CurrentOsDeviceRaw,
     string? ExistingUsbFreeLoaderGuid,
     string? ExistingUsbFreeSdiGuid,
-    string? ExistingFirmwareBootGuid = null);
+    string? ExistingFirmwareBootGuid = null,
+    bool InspectionSucceeded = true,
+    bool HasPendingBootSequence = false);
 
 public interface IBcdBootService
 {

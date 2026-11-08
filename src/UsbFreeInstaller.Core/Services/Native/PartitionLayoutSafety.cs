@@ -13,6 +13,73 @@ internal static class PartitionLayoutSafety
               current.MbrHiddenSectors == expected.MbrHiddenSectors &&
               (expected.MbrPartitionId == Guid.Empty || current.MbrPartitionId == expected.MbrPartitionId));
 
+    /// <summary>
+    /// Resolve an installer by its persisted disk identity, never by a partition number alone.
+    /// Windows Setup can renumber partitions after preparation; a stale number must not delete
+    /// a newly created OS/recovery partition. MBR has no partition GUID, so SWBI uses its
+    /// disk signature + starting offset token and requires an inactive primary FAT32 slot.
+    /// </summary>
+    internal static RawPartitionLayoutEntry ResolveInstallerForDeletion(
+        RawDiskLayoutSnapshot layout, string expectedPartitionIdentity)
+    {
+        if (string.IsNullOrWhiteSpace(expectedPartitionIdentity))
+            throw new InvalidOperationException("Installer partition identity is missing; refusing deletion by number alone.");
+
+        RawPartitionLayoutEntry[] matches;
+        if (layout.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_GPT && layout.GptDiskId != Guid.Empty &&
+            Guid.TryParse(expectedPartitionIdentity, out Guid id) && id != Guid.Empty)
+        {
+            matches = layout.Partitions.Where(p => p.GptPartitionId == id &&
+                p.GptPartitionType == Win32StorageInterop.GptBasicDataTypeGuid).ToArray();
+        }
+        else if (layout.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_MBR && layout.MbrSignature != 0)
+        {
+            matches = layout.Partitions.Where(p => p.RawSlotIndex is >= 0 and < 4 &&
+                p.MbrPartitionType == 0x0C && !p.MbrBootIndicator &&
+                string.Equals($"MBR:{layout.MbrSignature:X8}:{p.StartingOffsetBytes:X12}",
+                    expectedPartitionIdentity, StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+        else
+        {
+            throw new InvalidOperationException("Installer identity is invalid for this disk's partition style.");
+        }
+
+        if (matches.Length != 1)
+            throw new InvalidOperationException("Installer partition identity is missing, changed, or ambiguous; no partition was deleted.");
+        return matches[0];
+    }
+
+    /// <summary>
+    /// A successful IOCTL call alone does not show that the target is actually gone.
+    /// Confirm the same physical disk, no partition at the deleted offset/GUID, and
+    /// every other pre-existing partition unchanged (numbering may have changed).
+    /// </summary>
+    internal static bool WasInstallerDeleted(RawDiskLayoutSnapshot before, RawDiskLayoutSnapshot after,
+        RawPartitionLayoutEntry target)
+    {
+        if (before.PartitionStyle != after.PartitionStyle ||
+            (before.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_GPT &&
+             (before.GptDiskId == Guid.Empty || before.GptDiskId != after.GptDiskId)) ||
+            (before.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_MBR &&
+             (before.MbrSignature == 0 || before.MbrSignature != after.MbrSignature)))
+            return false;
+
+        if (after.Partitions.Any(p => p.StartingOffsetBytes == target.StartingOffsetBytes ||
+            (before.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_GPT &&
+             p.GptPartitionId == target.GptPartitionId)))
+            return false;
+
+        return before.Partitions.Where(p => p != target).All(p => after.Partitions.Any(other =>
+            other.PartitionLengthBytes == p.PartitionLengthBytes &&
+            (before.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_GPT
+                ? IsSamePartition(p, other) && other.GptPartitionType == p.GptPartitionType &&
+                  other.GptAttributes == p.GptAttributes
+                : other.StartingOffsetBytes == p.StartingOffsetBytes &&
+                  other.MbrPartitionType == p.MbrPartitionType &&
+                  other.MbrBootIndicator == p.MbrBootIndicator &&
+                  other.MbrHiddenSectors == p.MbrHiddenSectors)));
+    }
+
     internal static RawPartitionLayoutEntry VerifyBeforeFormatting(
         RawDiskLayoutSnapshot originalDisk, RawPartitionLayoutEntry expectedOs, RawDiskLayoutSnapshot current,
         int diskNumber, long installerStart, long installerLength, Guid installerGuid,

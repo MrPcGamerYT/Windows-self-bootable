@@ -540,17 +540,10 @@ public sealed class WindowsPartitionService : IPartitionService
         RawDiskLayoutSnapshot layout = Win32StorageInterop.TryReadDiskLayout(diskHandle)
             ?? throw new InvalidOperationException($"Unable to read partition layout on Disk {diskNumber}.");
 
-        RawPartitionLayoutEntry target = layout.Partitions.FirstOrDefault(p =>
-                !p.IsMbrExtendedContainer &&
-                ((!string.IsNullOrWhiteSpace(expectedPartitionGuid) &&
-                  p.GptPartitionId != Guid.Empty &&
-                  string.Equals($"{{{p.GptPartitionId:D}}}", expectedPartitionGuid, StringComparison.OrdinalIgnoreCase)) ||
-                 (!string.IsNullOrWhiteSpace(expectedPartitionGuid) &&
-                  layout.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_MBR &&
-                  string.Equals($"MBR:{layout.MbrSignature:X8}:{p.StartingOffsetBytes:X12}", expectedPartitionGuid, StringComparison.OrdinalIgnoreCase)) ||
-                 p.PartitionNumber == installerPartitionNumber))
-            ?? throw new InvalidOperationException(
-                $"Could not find temporary installer partition #{installerPartitionNumber} on Disk {diskNumber}.");
+        RawPartitionLayoutEntry target = PartitionLayoutSafety.ResolveInstallerForDeletion(layout, expectedPartitionGuid);
+        if (target.PartitionNumber != installerPartitionNumber)
+            _logger.Warn("Cleanup", $"Partition numbers changed after inspection ({installerPartitionNumber} -> {target.PartitionNumber}); " +
+                "deleting only the partition matching the saved GPT GUID / MBR signature and offset.");
 
         if (sysStartOffset > 0 && Math.Abs(target.StartingOffsetBytes - sysStartOffset) < 65536)
         {
@@ -584,10 +577,13 @@ public sealed class WindowsPartitionService : IPartitionService
             ? Win32StorageInterop.TrySerializeMbrSlotPatchPreservingEbrs(layout, null, target.RawSlotIndex)
             : null;
 
-        if (mbrDeleteBytes is not null)
+        if (layout.PartitionStyle == Win32StorageInterop.PARTITION_STYLE_MBR)
         {
+            if (mbrDeleteBytes is null)
+                throw new InvalidOperationException("Cannot preserve the original MBR/EBR slots when removing the installer; nothing was deleted.");
             CommitRawDiskLayoutBytesNative(diskHandle, mbrDeleteBytes);
-            _logger.Info("Cleanup", $"Deleted temporary MBR installer partition (Disk {diskNumber} Partition {installerPartitionNumber}, Slot {target.RawSlotIndex}) via native IOCTL.");
+            VerifyInstallerDeletion(diskHandle, layout, target);
+            _logger.Info("Cleanup", $"Verified temporary MBR installer partition deleted (Disk {diskNumber}, Slot {target.RawSlotIndex}) via native IOCTL.");
             return;
         }
 
@@ -633,8 +629,25 @@ public sealed class WindowsPartitionService : IPartitionService
         }
 
         CommitDiskLayoutNative(diskHandle, layout, updatedEntries);
+        VerifyInstallerDeletion(diskHandle, layout, target);
 
-        _logger.Info("Cleanup", $"Deleted temporary installer partition (Disk {diskNumber} Partition {installerPartitionNumber}) via native IOCTL.");
+        _logger.Info("Cleanup", $"Verified temporary installer partition deleted (Disk {diskNumber}, previous Partition {installerPartitionNumber}) via native IOCTL.");
+    }
+
+    private static void VerifyInstallerDeletion(SafeFileHandle diskHandle, RawDiskLayoutSnapshot before,
+        RawPartitionLayoutEntry removed)
+    {
+        for (int attempt = 0; attempt < 5; attempt++)
+        {
+            RawDiskLayoutSnapshot? after = Win32StorageInterop.TryReadDiskLayout(diskHandle);
+            if (after is not null && PartitionLayoutSafety.WasInstallerDeleted(before, after, removed)) return;
+            Win32StorageInterop.TryControlCode(diskHandle, Win32StorageInterop.IOCTL_DISK_UPDATE_PROPERTIES);
+            Thread.Sleep(200);
+        }
+        // The layout request may have succeeded and a later readback failed. Never
+        // claim the partition definitely remains or try deleting by stale number.
+        throw new InvalidOperationException("Partition deletion could not be verified after the disk layout update. " +
+            "It may already be unallocated; inspect the current layout before trying again.");
     }
 
     public Task ExtendOsPartitionIntoReclaimedSpaceAsync(

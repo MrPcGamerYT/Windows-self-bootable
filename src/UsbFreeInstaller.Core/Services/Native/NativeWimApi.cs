@@ -659,7 +659,8 @@ public static class NativeWimApi
         string bootWimPath,
         bool applyWin11HardwareBypass,
         string? storageDriversSourceDir,
-        ISafeLogger logger)
+        ISafeLogger logger,
+        string? requiredDriverInfPath = null)
     {
         if (!IsWimgapiAvailable() || !File.Exists(bootWimPath))
         {
@@ -678,6 +679,8 @@ public static class NativeWimApi
         string tempWorkDir = SwbiWorkDirectory.EnsureSafeWorkDirectory("wimtemp");
         string extractDir = SwbiWorkDirectory.CreateUniqueStagingDirectory("bootpe-edit");
         string rebuiltWimPath = Path.Combine(tempWorkDir, $"boot-rebuilt-{Guid.NewGuid():N}.wim");
+        int totalImages = 0;
+        int targetSetupIdx = 0;
 
         try
         {
@@ -691,9 +694,10 @@ public static class NativeWimApi
 
             try
             {
-                WIMSetTemporaryPath(hOrig, tempWorkDir);
-                int totalImages = (int)Math.Max(1u, WIMGetImageCount(hOrig));
-                int targetSetupIdx = totalImages >= 2 ? 2 : 1;
+                if (!WIMSetTemporaryPath(hOrig, tempWorkDir))
+                    return false;
+                totalImages = (int)Math.Max(1u, WIMGetImageCount(hOrig));
+                targetSetupIdx = totalImages >= 2 ? 2 : 1;
 
                 string? origXmlInfo;
                 IntPtr hSetupImg = WIMLoadImage(hOrig, (uint)targetSetupIdx);
@@ -742,7 +746,8 @@ public static class NativeWimApi
 
                 try
                 {
-                    WIMSetTemporaryPath(hNew, tempWorkDir);
+                    if (!WIMSetTemporaryPath(hNew, tempWorkDir))
+                        return false;
 
                     for (int idx = 1; idx <= totalImages; idx++)
                     {
@@ -753,7 +758,11 @@ public static class NativeWimApi
                             {
                                 try
                                 {
-                                    WIMExportImage(hOther, hNew, WIM_EXPORT_ALLOW_DUPLICATES);
+                                    if (!WIMExportImage(hOther, hNew, WIM_EXPORT_ALLOW_DUPLICATES))
+                                    {
+                                        logger.Warn("NativeWim", $"Could not export boot.wim image {idx}; keeping the original WIM.");
+                                        return false;
+                                    }
                                 }
                                 finally
                                 {
@@ -783,7 +792,11 @@ public static class NativeWimApi
                         }
                     }
 
-                    WIMSetBootImage(hNew, (uint)targetSetupIdx);
+                    if (WIMGetImageCount(hNew) != totalImages || !WIMSetBootImage(hNew, (uint)targetSetupIdx))
+                    {
+                        logger.Warn("NativeWim", "Rebuilt boot.wim has missing images or no boot image; keeping the original WIM.");
+                        return false;
+                    }
                 }
                 finally
                 {
@@ -800,46 +813,39 @@ public static class NativeWimApi
                 return false;
             }
 
-            // The rebuilt image must actually be a WIM before it replaces the installer's only boot payload.
-            if (!HasWimMagic(rebuiltWimPath))
+            // A valid header is insufficient: a failed WIMExportImage can silently drop index 1,
+            // making WinPE unbootable even though MSWIM and its offset table look plausible.
+            string? firstDriverInf = hasDrivers && storageDriversSourceDir is not null
+                ? requiredDriverInfPath ?? Directory.EnumerateFiles(storageDriversSourceDir, "*.inf", SearchOption.AllDirectories).FirstOrDefault()
+                : null;
+            string? driverPathInWim = firstDriverInf is not null
+                ? @"\Windows\SWBI-BootDrivers\" + Path.GetRelativePath(storageDriversSourceDir!, firstDriverInf)
+                : null;
+            bool usesWinPeShell = hasDrivers && File.Exists(Path.Combine(extractDir, "Windows", "System32", "winpeshl.ini"));
+            string? startupPathInWim = hasDrivers
+                ? usesWinPeShell ? @"\Windows\System32\winpeshl.ini" : @"\Windows\System32\startnet.cmd"
+                : null;
+            bool VerifyRebuild(string path) => VerifyBootWimImages(path, totalImages, targetSetupIdx,
+                driverPathInWim, startupPathInWim, usesWinPeShell, tempWorkDir, logger);
+
+            if (!VerifyRebuild(rebuiltWimPath))
             {
-                logger.Warn("NativeWim", "Rebuilt boot.wim does not start with a valid MSWIM header; the original was kept.");
+                logger.Warn("NativeWim", "Rebuilt boot.wim did not retain all readable WinPE images/driver files; the original was kept.");
                 return false;
             }
 
-            // Replace atomically and keep the original until the new file is in place, so an interruption can
-            // never leave the installer partition with a truncated boot.wim.
-            string stagedCopy = bootWimPath + ".new";
-            File.Copy(rebuiltWimPath, stagedCopy, overwrite: true);
-            using (var staged = new FileStream(stagedCopy, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
-            {
-                staged.Flush(flushToDisk: true);
-            }
-
-            string backupCopy = bootWimPath + ".swbi-backup";
-            try
-            {
-                if (File.Exists(bootWimPath))
-                {
-                    File.Replace(stagedCopy, bootWimPath, backupCopy, ignoreMetadataErrors: true);
-                }
-                else
-                {
-                    File.Move(stagedCopy, bootWimPath);
-                }
-            }
-            catch (Exception replaceError)
-            {
-                // FAT32 volumes do not always support ReplaceFile; the staged image is already verified.
-                logger.Warn("NativeWim", $"Atomic boot.wim replacement failed ({replaceError.Message}); copying the verified image instead.");
-                File.Copy(stagedCopy, bootWimPath, overwrite: true);
-                SwbiWorkDirectory.TryDeleteFile(stagedCopy);
-            }
-
-            logger.Info(
-                "NativeWim",
-                $"Updated boot.wim natively via self-hosted wimgapi.dll (zero dism.exe / reg.exe); previous image kept as '{Path.GetFileName(backupCopy)}'.");
+            // Stage on the same volume, then replace or rename (FAT32 fallback). Never
+            // File.Copy(overwrite: true) into boot.wim: a full disk could truncate it.
+            string backupCopy = BootWimReplacement.Install(rebuiltWimPath, bootWimPath, VerifyRebuild);
+            logger.Info("NativeWim", $"Updated boot.wim after verifying all {totalImages} images and boot index {targetSetupIdx}; " +
+                $"original ISO boot image retained as '{Path.GetFileName(backupCopy)}'.");
             return true;
+        }
+        catch (BootWimRecoveryException)
+        {
+            // The sole boot payload may be missing or damaged: preparation must abort,
+            // not treat this as an optional injection failure and arm the BCD entry.
+            throw;
         }
         catch (Exception ex)
         {
@@ -870,6 +876,64 @@ public static class NativeWimApi
         {
             return false;
         }
+    }
+
+    private static bool VerifyBootWimImages(string path, int expectedCount, int setupIndex,
+        string? driverInfPathInWim, string? startupPathInWim, bool usesWinPeShell, string tempWorkDir,
+        ISafeLogger logger)
+    {
+        bool Invalid(string why)
+        {
+            logger.Warn("NativeWimVerify", $"{Path.GetFileName(path)} verification failed: {why}");
+            return false;
+        }
+        if (!HasWimMagic(path)) return Invalid("missing MSWIM header");
+        if (!VerifyWimOrSwmIntegrity(path, out string detail)) return Invalid(detail);
+        IntPtr wim = WIMCreateFile(path, WIM_GENERIC_READ, WIM_OPEN_EXISTING, 0, 0, out _);
+        if (wim == IntPtr.Zero) return Invalid($"WIMCreateFile failed (Win32 {Marshal.GetLastWin32Error()})");
+        string extracted = Path.Combine(tempWorkDir, $"verify-driver-{Guid.NewGuid():N}.tmp");
+        try
+        {
+            if (!WIMSetTemporaryPath(wim, tempWorkDir))
+                return Invalid($"WIMSetTemporaryPath failed (Win32 {Marshal.GetLastWin32Error()})");
+            uint actualCount = WIMGetImageCount(wim);
+            if (actualCount != expectedCount) return Invalid($"found {actualCount} image(s), expected {expectedCount}");
+            for (uint index = 1; index <= expectedCount; index++)
+            {
+                IntPtr image = WIMLoadImage(wim, index);
+                if (image == IntPtr.Zero) return Invalid($"cannot load image {index} (Win32 {Marshal.GetLastWin32Error()})");
+                try
+                {
+                    if (index == setupIndex)
+                    {
+                        if (driverInfPathInWim is not null && !ContainsWimImageFile(image, driverInfPathInWim, extracted))
+                            return Invalid($"missing/unreadable active controller INF in image {index}: {driverInfPathInWim}");
+                        if (startupPathInWim is not null &&
+                            (!ContainsWimImageFile(image, startupPathInWim, extracted,
+                                usesWinPeShell ? "swbi-load-drivers.cmd" : "drvload") ||
+                             (usesWinPeShell && !ContainsWimImageFile(image,
+                                 @"\Windows\System32\swbi-load-drivers.cmd", extracted, "drvload"))))
+                            return Invalid($"WinPE startup hook/loader missing in image {index}: {startupPathInWim}");
+                    }
+                }
+                finally { WIMCloseHandle(image); }
+            }
+            return true;
+        }
+        finally
+        {
+            WIMCloseHandle(wim);
+            SwbiWorkDirectory.TryDeleteFile(extracted);
+        }
+    }
+
+    private static bool ContainsWimImageFile(IntPtr image, string imagePath, string extractionPath, string? requiredText = null)
+    {
+        SwbiWorkDirectory.TryDeleteFile(extractionPath);
+        if (!WIMExtractImagePath(image, imagePath, extractionPath, 0) ||
+            !File.Exists(extractionPath) || new FileInfo(extractionPath).Length == 0)
+            return false;
+        return requiredText is null || File.ReadAllText(extractionPath).Contains(requiredText, StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool DoesPeArchitectureMatchCurrentProcess(string dllPath)
@@ -981,20 +1045,11 @@ public static class NativeWimApi
 
         string startnetPath = Path.Combine(extractedWinPeRoot, "Windows", "System32", "startnet.cmd");
         string existing = File.Exists(startnetPath) ? File.ReadAllText(startnetPath) : "wpeinit\r\n";
-        var sb = new StringBuilder();
-        sb.AppendLine("@echo off");
-        if (includeLabConfigCmd)
-        {
-            sb.AppendLine("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f >nul 2>&1");
-            sb.AppendLine("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f >nul 2>&1");
-            sb.AppendLine("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f >nul 2>&1");
-            sb.AppendLine("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassCPUCheck /t REG_DWORD /d 1 /f >nul 2>&1");
-            sb.AppendLine("reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassStorageCheck /t REG_DWORD /d 1 /f >nul 2>&1");
-        }
-        sb.AppendLine("for /r \"%SystemRoot%\\SWBI-BootDrivers\" %%i in (*.inf) do drvload \"%%i\" >nul 2>&1");
-        sb.AppendLine(existing.Trim());
-
-        File.WriteAllText(startnetPath, sb.ToString(), Encoding.ASCII);
+        // Start WinPE's PnP subsystem *before* drvload, but load drivers before the
+        // ISO's existing Setup launcher. Preserve the remainder of custom startnet.cmd.
+        File.WriteAllText(startnetPath,
+            WinPeStartnetComposer.AddStorageDriverLoading(existing, includeLabConfigCmd), Encoding.ASCII);
+        WinPeShellIntegration.EnsureDriverLoaderRunsBeforeSetup(extractedWinPeRoot, includeLabConfigCmd, logger);
         logger.Info("NativeWim", $"Staged {infCount} OEM storage driver INF(s) into WinPE boot.wim.");
     }
 

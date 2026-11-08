@@ -15,7 +15,7 @@ public sealed class CleanupViewModel : ObservableObject
     private CleanupInspectionResult? _inspection;
     private bool _extendOsIfAdjacent = true;
     private bool _confirmedIndependentBoot;
-    private string _statusMessage = $"Click 'Inspect Post-Install State' to check for temporary '{SwbiBrand.PartitionVolumeLabel}' partitions and '{SwbiBrand.BootChooserEntryName}' boot entries.";
+    private string _statusMessage = $"Click 'Inspect SWBI State' to check for an orphaned boot entry or a temporary '{SwbiBrand.PartitionVolumeLabel}' partition. Inspection makes no changes.";
     private string _statusDetail = string.Empty;
     private CleanupExecutionResult? _lastResult;
     private bool _isBusy;
@@ -34,6 +34,7 @@ public sealed class CleanupViewModel : ObservableObject
             if (SetProperty(ref _inspection, value))
             {
                 OnPropertyChanged(nameof(HasCandidatePartition));
+                OnPropertyChanged(nameof(CleanupActionLabel));
                 OnPropertyChanged(nameof(CanExtendOsDirectly));
                 OnPropertyChanged(nameof(AdjacencySummary));
                 ExecuteCleanupCommand.NotifyCanExecuteChanged();
@@ -68,6 +69,10 @@ public sealed class CleanupViewModel : ObservableObject
     }
 
     public bool HasCandidatePartition => Inspection?.CandidatePartition is not null;
+
+    public string CleanupActionLabel => Inspection is { CanExecuteCleanup: true, CandidatePartition: null }
+        ? "Remove Recognized SWBI Boot Entries Only"
+        : "Remove SWBI Boot Entries & Reclaim Partition";
 
     public bool CanExtendOsDirectly => Inspection?.Adjacency is { CanExtendOsPartitionDirectly: true };
 
@@ -140,6 +145,7 @@ public sealed class CleanupViewModel : ObservableObject
         try
         {
             LastResult = null;
+            ConfirmedIndependentBoot = false; // An old confirmation is not valid for a new inspection.
             StatusDetail = string.Empty;
             StatusMessage = "Inspecting active boot configuration, UEFI/BCD entries, GPT/MBR partition identities, and adjacency...";
 
@@ -159,8 +165,10 @@ public sealed class CleanupViewModel : ObservableObject
 
             StatusMessage = result.State switch
             {
+                CleanupSafetyState.ReadyToClean when result.CandidatePartition is null =>
+                    "Boot-only recovery: review the identifiers below. No installer partition was found; cleanup will not change C: or any partition.",
                 CleanupSafetyState.ReadyToClean =>
-                    $"Ready to remove temporary {SwbiBrand.ShortName} installer resources safely.",
+                    $"Ready to remove temporary {SwbiBrand.ShortName} installer resources after review.",
                 CleanupSafetyState.NoInstallerArtifactsFound =>
                     $"Clean! No temporary '{SwbiBrand.PartitionVolumeLabel}' partition or '{SwbiBrand.BootChooserEntryName}' boot entry exists on this system.",
                 CleanupSafetyState.BlockedActiveDependency =>
@@ -196,7 +204,9 @@ public sealed class CleanupViewModel : ObservableObject
             ExecutionMode mode = _getExecutionMode();
             StatusMessage = mode == ExecutionMode.DryRun
                 ? $"Simulating {SwbiBrand.ShortName} post-install cleanup in Dry-Run mode..."
-                : $"Removing '{SwbiBrand.BootChooserEntryName}' boot entries and '{SwbiBrand.PartitionVolumeLabel}' partition...";
+                : Inspection.CandidatePartition is null
+                    ? "Backing up the active BCD and removing recognized SWBI boot entries only; no partition will be changed..."
+                    : $"Removing '{SwbiBrand.BootChooserEntryName}' boot entries and '{SwbiBrand.PartitionVolumeLabel}' partition...";
 
             CleanupExecutionResult execResult = await _cleanupService.ExecuteCleanupAsync(
                 Inspection,
@@ -205,6 +215,17 @@ public sealed class CleanupViewModel : ObservableObject
 
             LastResult = execResult;
             StatusMessage = execResult.Summary;
+            if (mode == ExecutionMode.Live)
+            {
+                // The inspected partition number/boot identities may now be stale even when an
+                // operation partially failed. Require a fresh scan before another disk mutation.
+                Inspection = null;
+                ConfirmedIndependentBoot = false;
+                SafetyChecks.Clear();
+                StatusDetail = execResult.Succeeded
+                    ? "Re-inspect the boot and disk state before preparing or cleaning anything else."
+                    : "Re-inspect to see what remains; do not retry from the old inspection. The flags in the result show what already completed.";
+            }
         }
         catch (OperationCanceledException)
         {

@@ -45,14 +45,16 @@ Normally, doing a **true clean Windows installation**, **downgrading from Window
 
 **SWBI (`Self Windows Bootable Installer`)** attempts this using a temporary partition, including on systems with only `C:`. Firmware and storage behavior varies; preparation or boot may fail.
 
+> **Repair-branch status:** The UEFI boot/driver/cleanup changes described below are source changes on `arena/73a09c8a-windows-self-bootable`, **not a published release**. The Windows CI WIM round-trip is green, but the affected PC subsequently revealed an older SWBI boot entry blocking preparation after ISO deployment. This branch now checks for that conflict **before touching BitLocker or the disk** and provides a reviewed boot-only cleanup path. CI still cannot establish that Setup boots or sees the disk on the affected PC. Do not assume the executable at Releases/latest contains this repair.
+
 > **Data-safety warning:** Back up important files and save the BitLocker recovery key before live operation. Have independent Windows recovery/installation media available. Online partition changes and firmware writes are not atomic, and power loss or failed cleanup can require manual recovery. Validate this version in a disposable Windows VM before using it on important hardware.
 
 
 1. **Creates a Dedicated Internal Boot Partition:** Attempts to shrink the tail end of `C:` online and then formats a temporary **FAT32** installer partition labeled **`SWBI-SETUP`**.
 2. **Deploys Any Official or Custom Windows 10 / 11 ISO:** Streams files directly out of your `.iso` in pure C# (no fragile Virtual DVD drive letters required) and automatically splits large `> 4 GB` `install.wim` / `install.esd` images into FAT32-compatible `.swm` chunks (`install.swm`, `install2.swm`, …) so **UEFI Secure Boot** works natively.
-3. **Protects Your Hardware Drivers Automatically:** Harvests your PC's active **NVMe / Intel VMD / Intel RST / RAID / SATA storage drivers** and **Wi-Fi / Ethernet network drivers**, placing them into `$WinPEDriver$`, a visible folder on `SWBI-SETUP`, and `sources\boot.wim` — preventing the notorious *"We couldn't find any drives"* error during setup.
-4. **Requests a One-Time Setup Boot:** On UEFI, registers an installer-local EFI loader with firmware `BootNext`; on legacy BIOS, uses a backed-up Windows Boot Manager BCD and `{bootmgr}\bootsequence`. It does not arm both paths at once or replace the host ESP boot manager. Actual boot behavior depends on firmware and the installer media.
-5. **100% Self-Contained (Zero Reliance on Built-In Windows Tools):** Every disk, NTFS shrink, FAT32 format, ISO/UDF parse, WIM/SWM split, registry hive mount, and UEFI/BCD operation runs **in-process via pure C# and direct Win32/NT kernel IOCTLs** — so SWBI still works even when your current Windows installation is heavily stripped, modded, or corrupted (`diskpart`, `bcdedit`, `dism`, `powershell`, `format.com`, and `%TEMP%` are never required).
+3. **Stages Your Hardware Drivers:** Exports matching **NVMe / Intel VMD / Intel RST / RAID / SATA** and **Wi-Fi / Ethernet** driver packages to `$WinPEDriver$` and a visible folder on `SWBI-SETUP`. When requested and verifiable, SWBI also rebuilds `sources\boot.wim` with storage drivers. If it cannot verify the running controller's package and injection, it warns **before reboot**. Driver staging does not guarantee that Windows Setup will detect every disk; keep the correct vendor F6 driver available.
+4. **Requests a One-Time Setup Boot:** On both UEFI and legacy BIOS, backs up the active system BCD and requests a one-time WinPE ramdisk entry via the existing Windows Boot Manager (`{bootmgr}\bootsequence`). It does not replace the host ESP boot manager or arm firmware `BootNext`. Actual boot behavior depends on firmware, BCD, and the installer media.
+5. **Host Preparation Runs In-Process:** Disk, NTFS, ISO, WIM and BCD preparation use C# and Win32 APIs, not host `diskpart`, `bcdedit`, `dism` or `format.com`. The **booted WinPE image** uses its own `wpeinit` / `drvload` tools and, for optional hardware-check bypass, `reg` to load drivers and set LabConfig. A stripped host or custom ISO may still lack required components.
 6. **One-Click Post-Install Space Reclamation:** Once your fresh Windows desktop opens, launch SWBI again, switch to **`2. Post-Install Cleanup`**, and click one button to remove the temporary `SWBI-SETUP` partition and, when the freed space is adjacent and compatible, extend `C:` into it.
 
 ---
@@ -155,8 +157,8 @@ Double-click your downloaded **`SWBI-SelfWindowsBootableInstaller-...exe`** and 
    - Shrinks `C:` online and silently creates/formats `SWBI-SETUP` (`FAT32`) **with zero Explorer "Format Disk" popups**,
    - Extracts your ISO & splits any `> 4 GB` image into verified `.swm` files,
    - Exports & injects your PC's storage and Wi-Fi/LAN drivers,
-   - Verifies every boot file and WIM/SWM header, and
-   - Arms **`SWBI - Self Windows Bootable Installer`** for your next restart.
+   - Verifies required boot files, WIM/SWM structure, and any rebuilt boot.wim images, and
+   - Backs up the system BCD and requests **`SWBI - Self Windows Bootable Installer`** for the next restart. **Read any driver-detection warning before rebooting.**
 
 #### Step 5 • Reboot & Install
 - Once preparation reaches **100%**, SWBI automatically opens **Step 5 — SWBI Self-Bootable Windows Installer Ready**.
@@ -167,8 +169,8 @@ Double-click your downloaded **`SWBI-SelfWindowsBootableInstaller-...exe`** and 
 ### Phase 2 — Install Windows After Restart (Inside Windows Setup)
 
 1. **Requested Boot Into SWBI:**
-   - The next restart requests the installer through UEFI `BootNext` or the legacy BCD boot sequence. Firmware can ignore or remove entries, and the installer may not boot.
-   - On UEFI, the temporary entry may also be available in your motherboard's boot menu (`F12`, `F11`, `F8`, `F9`, or `Esc`). If it is not, use independent recovery media rather than assuming the existing OS will boot.
+   - The next restart requests the installer through the existing Windows Boot Manager's one-time BCD boot sequence. If you see the Windows Boot Manager menu, select **SWBI - Self Windows Bootable Installer**. Firmware, Secure Boot, and Windows Boot Manager behavior can differ; this does not guarantee a successful boot.
+   - If the system returns straight to normal Windows, **do not repeatedly prepare or delete partitions**. Inspect SWBI's log and BCD state; use independent recovery media if Windows cannot start. The motherboard's F12-style menu selects boot devices, not this BCD entry.
 
 2. **Follow the Initial Setup Screens:**
    - Choose your Language/Keyboard → click **Next** → **Install now**.
@@ -196,7 +198,7 @@ Double-click your downloaded **`SWBI-SelfWindowsBootableInstaller-...exe`** and 
    - If your MBR disk has no separate `System Reserved` partition (meaning `C:` holds the Active `0x80` boot flag), click **Format** on `Partition 1` (do **not** click Delete, so the Active boot flag stays intact), then keep `Partition 1` selected and click **Next**!
 
 4. **Need a Storage or Wi-Fi Driver Manually? (Usually Automatic!)**
-   - SWBI already auto-loads drivers from `SWBI-SETUP\$WinPEDriver$` and `boot.wim`.
+   - Setup may find drivers under `SWBI-SETUP\$WinPEDriver$`; SWBI attempts boot.wim injection when configured. Neither guarantees that the active disk controller will be usable with this Windows version. If no disk appears, **stop** and obtain a matching vendor F6 storage driver instead of deleting another partition.
    - If you ever want to load a driver manually during Setup, click **Load driver → Browse → `SWBI-SETUP` → `SWBI - Self Windows Bootable Installer Drivers` → `Storage`** (or after Windows boots, open **`Network`** in Device Manager to install Wi-Fi immediately offline!).
 
 5. **Let Windows Finish Installing:**
@@ -210,15 +212,10 @@ Once your new Windows installation reaches the Desktop and boots normally on its
 
 1. Launch **`SWBI-SelfWindowsBootableInstaller-...exe`** as Administrator *(or run `SWBI-SelfWindowsBootableInstaller.exe --cleanup`)*.
 2. Click **`2. Post-Install Cleanup`** in the top navigation bar (and make sure **`Dry-Run Safety Mode`** is **unchecked**).
-3. Click **`Inspect Post-Install State`** (SWBI verifies you are booted into your real Windows OS, confirms `SWBI-SETUP`'s cryptographic manifest / partition GUID, and checks right-side adjacency to `C:`).
-4. Ensure both checkboxes are checked:
-   - **`Automatically extend C: into reclaimed space`**
-   - **`I confirm my new Windows installation boots normally into the desktop without needing SWBI Setup.`**
-5. Click **`Remove SWBI Boot Entries & Reclaim Partition`**.
-6. In **2–5 seconds**, SWBI:
-   - Removes the recorded temporary firmware or legacy BCD entry,
-   - Deletes the temporary `SWBI-SETUP` partition, and
-   - Attempts to extend `C:` into the reclaimed space when the layout permits it.
+3. Click **`Inspect SWBI State (Read-Only)`**. SWBI checks that the current Windows session does not depend on SWBI, looks for the installer partition and its matching JSON manifest / partition identity, and shows the exact boot-entry identifiers. The manifest is an ownership record, **not a cryptographic signature**.
+4. Review every listed identifier and candidate partition. Only if it matches your previous SWBI run and the safety state is ready, confirm **`I confirm this Windows desktop boots independently ...`**. Leave **`Automatically extend C:`** checked only if the inspected partition is the one you intend to reclaim and it is adjacent.
+5. In Live mode, click **`Remove SWBI Boot Entries & Reclaim Partition`**. SWBI takes a fresh active-BCD backup before boot-entry removal, rechecks boot/disk identities, then removes only recognized entries and the **manifest-matching** installer partition. If identity verification fails, cleanup stops; do not manually delete other partitions.
+6. If `SWBI-SETUP` is **absent** (for example after a failed preparation was rolled back), the action instead reads **`Remove Recognized SWBI Boot Entries Only`** and will not delete or resize any partition. See the recovery guide below before using it.
 
 ---
 
@@ -226,7 +223,7 @@ Once your new Windows installation reaches the Desktop and boots normally on its
 
 ### Upgrading Windows 10 → Windows 11 (Supported & Unsupported PCs)
 - Select any Windows 11 ISO in **Step 2**.
-- **On Unsupported PCs (No TPM 2.0, older Intel 6th/7th-gen or Ryzen 1000 CPU, Legacy MBR, or 4 GB RAM):** SWBI automatically enables **`Bypass Windows 11 Hardware Requirements in Setup (LabConfig)`**, injecting `BypassTPMCheck`, `BypassSecureBootCheck`, `BypassCPUCheck`, `BypassRAMCheck`, and `BypassStorageCheck` into both WinPE `boot.wim` and `AutoUnattend.xml`.
+- **On Unsupported PCs (No TPM 2.0, older Intel 6th/7th-gen or Ryzen 1000 CPU, Legacy MBR, or 4 GB RAM):** SWBI can request **`Bypass Windows 11 Hardware Requirements in Setup (LabConfig)`**. It writes bypass values to the answer file and attempts to rebuild WinPE `boot.wim`; if the rebuild cannot be verified, it keeps the original boot.wim. Bypassing checks may not work on every Windows release.
 - **Installer-local UEFI boot:** SWBI points firmware at the installer's architecture-specific EFI loader and leaves the host ESP boot manager and standalone installer BCD unchanged. This avoids replacing host boot files but does not guarantee that firmware or Secure Boot will accept the media.
 
 ### Downgrading ("Degrading") Windows 11 → Windows 10 Without USB
@@ -266,8 +263,8 @@ Once your new Windows installation reaches the Desktop and boots normally on its
 │                                                            └─ EFI\BOOT\BOOTX64   │
 └───────────────────────────────────────┬──────────────────────────────────────────┘
                                         │
-        Restart -> UEFI BootNext OR legacy BCD bootsequence (one-time request)
-        Installer-local boot files request [SWBI-SETUP]\sources\boot.wim
+        Restart -> existing Windows Boot Manager BCD bootsequence (one-time request)
+        Ramdisk loader requests [SWBI-SETUP]\sources\boot.wim + boot\boot.sdi
                                         ▼
 ┌──────────────────────────────────────────────────────────────────────────────────┐
 │ 3. INSIDE WINDOWS SETUP (WinPE Running Entirely in RAM + Reading SWBI-SETUP)     │
@@ -292,16 +289,16 @@ Once your new Windows installation reaches the Desktop and boots normally on its
 | **Stage 2** | Suspends BitLocker protection for 1 reboot cycle if encrypted (`DisableKeyProtectors` / WMI FVE) and runs drive-aware optimization (**SSD/NVMe `FSCTL_FILE_LEVEL_TRIM`** vs **HDD tail cluster consolidation** — never defrags flash media). | `WindowsPartitionService`, `NativeNtfsShrinkEngine` |
 | **Stage 3** | Suppresses `MountPointManager` AutoMount (`IOCTL_MOUNTMGR_SET_AUTO_MOUNT`) + sets `GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER` so Windows Explorer **never** pops up *"You need to format the disk in drive E:"*, shrinks `C:` online (`FSCTL_SHRINK_VOLUME`), writes the GPT/MBR entry (`IOCTL_DISK_SET_DRIVE_LAYOUT_EX`), formats `\\?\Volume{guid}` as **FAT32 (`SWBI-SETUP`)**, restores AutoMount, and mounts the installer drive letter. | `NativeNtfsShrinkEngine`, `NativeFat32Formatter`, `MountMgrAutoMountSuppressionScope` |
 | **Stage 4** | Streams all files directly from the `.iso` via SWBI's zero-mount C# **UDF + ISO-9660/Joliet** reader; splits any `install.wim` > 4 GB directly into FAT32-safe `3,800 MB` `.swm` parts (`install.swm`, `install2.swm`, …) in pure C# (or converts large `.esd` via ISO-self-hosted `wimgapi.dll`); synthesizes missing `boot\boot.sdi` or EFI loaders; applies `LabConfig` / `ei.cfg` / `swbi.ico` branding. | `NativeIsoReader`, `PureCSharpWimSplitter`, `NativeWimApi`, `WindowsIsoDeploymentService` |
-| **Stage 5** | Scans `DriverStore\FileRepository` (with fallback reconstruction from `%SystemRoot%\INF` + `System32\drivers`) for non-inbox OEM `SCSIAdapter`, `HDC`, `System`, and `Net` drivers; exports them to `$WinPEDriver$` + `SWBI - Self Windows Bootable Installer Drivers` and offline-injects boot-critical storage drivers into `sources\boot.wim`. | `NativeDriverStoreScanner`, `WindowsDriverHarvesterService`, `NativeWimApi` |
+| **Stage 5** | Exports OEM storage and network packages to `$WinPEDriver$` and the visible driver folder. For boot.wim injection, stages the matching controller package, runs `wpeinit` before `drvload` through the actual WinPE startup path (`startnet.cmd` or `winpeshl.ini` before Setup), and verifies the rebuilt WIM images and embedded startup/INF files before swapping. Failure keeps the original boot.wim and presents a disk-detection warning. A driver package may still be incompatible with the target Windows version. | `NativeDriverStoreScanner`, `WindowsDriverHarvesterService`, `NativeWimApi` |
 | **Stage 6** | Performs pre-boot binary verification of `boot\boot.sdi`, `sources\boot.wim`, architecture-matched UEFI/BIOS boot managers (`bootx64.efi`, `bootaa64.efi`, `bootia32.efi`, `bootmgr`), `setup.exe`, and `MSWIM` headers **before** any boot entry is armed. | `WindowsIsoDeploymentService` |
-| **Stage 7** | On UEFI, requires a nonempty architecture-named EFI loader and installer-local BCD, then registers `BootXXXX`, `BootOrder` and one-time `BootNext`, with readback. On legacy BIOS, backs up the active system BCD and creates a one-time BCD entry. Neither path modifies the standalone installer BCD. The manifest records the selected path. | `NativeUefiAndBcdRegistryEngine`, `WindowsBcdBootService` |
+| **Stage 7** | On both UEFI and BIOS, backs up the active system BCD, creates a WinPE ramdisk loader + SDI entry and requests a one-time `{bootmgr}\bootsequence` with readback. Neither path replaces the host ESP boot manager or modifies the standalone installer BCD. Older UEFI `BootNext` manifests remain supported for cleanup. | `NativeUefiAndBcdRegistryEngine`, `WindowsBcdBootService` |
 
 ---
 
 ### Deep-Dive Engineering Subsystems
 
-#### 1. 100% Zero-Windows-Tool Self-Contained Engine
-SWBI **never spawns** `diskpart.exe`, `bcdedit.exe`, `dism.exe`, `format.com`, `powershell.exe`, `pnputil.exe`, `reg.exe`, `defrag.exe`, `manage-bde.exe`, or `shutdown.exe`. Even if a user's current Windows OS is heavily debloated, corrupted, or missing `System32` command-line utilities, every operation executes natively inside SWBI's own process.
+#### 1. Self-Contained Host Preparation Engine
+The desktop app's preparation path performs disk/BCD/WIM operations through native APIs rather than spawning host `diskpart.exe`, `bcdedit.exe`, `dism.exe`, or `format.com`. **After reboot**, the modified WinPE image relies on its own `wpeinit.exe`, `drvload.exe`, and (when LabConfig bypass is selected) `reg.exe`. If these are absent from custom installation media, automatic driver loading/bypass cannot be assumed.
 
 #### 2. Why FAT32 + Pure-C# `.swm` Splitting? (Native UEFI & Secure Boot)
 - Every UEFI motherboard includes a built-in **FAT32** filesystem driver in ROM, whereas booting an **NTFS** partition in UEFI requires unsigned/third-party UEFI NTFS drivers that often get blocked by **Secure Boot**.
@@ -316,10 +313,9 @@ SWBI **never spawns** `diskpart.exe`, `bcdedit.exe`, `dism.exe`, `format.com`, `
 - Normally, writing a new partition entry to a disk causes Windows `MountPointManager` (`\\.\MountPointManager`) to immediately mount an unformatted drive letter (`E:`), triggering Explorer's alarming *"You need to format the disk in drive E: before you can use it"* dialog.
 - SWBI wraps partition creation inside `MountMgrAutoMountSuppressionScope` (`IOCTL_MOUNTMGR_SET_AUTO_MOUNT = Disabled`) and sets `GPT_BASIC_DATA_ATTRIBUTE_NO_DRIVE_LETTER` (`0x8000000000000000`) while formatting `\\?\Volume{guid}` directly via `NativeFat32Formatter`. Only **after** a valid `FAT32` (`SWBI-SETUP`) filesystem is committed on disk does SWBI restore AutoMount, clear `NO_DRIVE_LETTER`, and mount the drive letter cleanly.
 
-#### 5. Firmware-Specific Boot Registration
-- UEFI requires a nonempty installer-local, architecture-named EFI loader and BCD, then requests a single firmware `BootNext` entry. These checks do not establish signature validity or bootability. It does not replace the host ESP's boot manager or arm a host BCD boot sequence.
-- Legacy BIOS requires a successful backup of the already-loaded system BCD before creating ramdisk entries and a one-time `{bootmgr}\bootsequence`. Existing pending one-time entries are not overwritten.
-- Registration checks reads and writes, attempts ownership-limited cleanup on errors, and preserves the installer partition if boot cleanup cannot be confirmed. Firmware variables and BCD operations are not transactional; recovery may be necessary.
+#### 5. One-Time Windows Boot Manager Registration
+- UEFI and BIOS now use the **existing Windows Boot Manager**, not a firmware `BootNext` pointing at a GPT Basic Data FAT32 partition (firmware may refuse to boot that partition). Both modes require a successful backup of the active system BCD, create WinPE ramdisk + SDI entries, and arm a one-time `{bootmgr}\bootsequence`; an existing pending sequence is not overwritten. The host ESP's boot manager and the installer's standalone BCD are not replaced.
+- Registration checks reads and writes, attempts ownership-limited cleanup on errors, and preserves the installer partition if boot cleanup cannot be confirmed. Older `BootNext` manifests can still be cleaned up. BCD/firmware operations are not transactional and this path has **not** been proven to boot on the affected hardware; keep recovery media available.
 
 #### 6. `%TEMP%` & `ZLAG~1`-Immune Native Win32 Self-Extracting `.exe` Wrapper
 - Standard `.NET` `PublishSingleFile` binaries extract native WPF DLLs (`wpfgfx_cor3.dll`, `D3DCompiler_47_cor3.dll`) into `%TEMP%\.net\...`, which crashes silently at launch on PCs where `%TEMP%` has broken 8.3 short paths (`C:\Users\ZLAG~1`), non-ASCII usernames, RAM-disk cleaners, or strict ACLs.
@@ -334,8 +330,8 @@ SWBI uses consistent, unmistakable names across every firmware, boot, and setup 
 | Screen / Menu | Exact Visible Name | What to Do |
 |---|---|---|
 | **Desktop App & Taskbar** | **`SWBI — Self Windows Bootable Installer`** (`swbi.ico`) | Run to prepare your installer or perform post-install cleanup |
-| **Windows Boot Manager (legacy BIOS)** | **`SWBI - Self Windows Bootable Installer`** | One-time BCD request; boot is not guaranteed |
-| **UEFI firmware boot menu** | **`SWBI - Self Windows Bootable Installer`** | Temporary entry may appear, depending on firmware |
+| **Windows Boot Manager (UEFI or legacy BIOS)** | **`SWBI - Self Windows Bootable Installer`** | One-time BCD request; boot is not guaranteed |
+| **UEFI firmware boot menu** | **Windows Boot Manager (existing system disk)** | Select the normal Windows Boot Manager device if needed; F12-style firmware menus do not show SWBI's BCD loader |
 | **Windows Setup Partition Table** | **`Disk X Partition Y: SWBI-SETUP`** | **DO NOT DELETE OR FORMAT** during Windows Setup! |
 | **Windows Setup → Load Driver → Browse** | **`SWBI-SETUP\SWBI - Self Windows Bootable Installer Drivers`** | Browse `Storage\` or `Network\` if ever needed manually |
 | **Windows File Explorer** | **`SWBI - Self Windows Bootable Installer`** + custom icon | Temporary FAT32 installer drive (`reclaimed in Phase 3`) |
@@ -395,6 +391,19 @@ Classic MBR partition tables have a hardware limit of **4 primary slots** (`64 b
 If your existing Windows still boots normally, open SWBI → **`2. Post-Install Cleanup`** and inspect the state before removing the temporary entry and partition. Space is reclaimed only where the layout allows it; if cleanup fails, leave the partition intact and investigate with recovery media.
 </details>
 
+<details>
+<summary><strong>Q: Step 4 says an existing SWBI boot entry blocks preparation, but the SWBI-SETUP partition was rolled back. What now?</strong></summary>
+
+**Stop trying preparation.** An ISO-copy percentage is not boot readiness: the installer is not armed and **Next** stays disabled on failure. On the repair branch, this conflict is detected before BitLocker suspension, OS shrink, or ISO deployment. The older SWBI entry may be a BCD loader/SDI or a firmware `BootXXXX` slot; the app shows its identifier. The prior run's installer partition may already have been removed and C: extended; check the current disk state rather than assuming it exists.
+
+1. Boot your **existing Windows desktop independently**. Keep a backup, your BitLocker recovery key, and independent recovery media. Launch the **newly built repair-branch executable** as Administrator. The published release may not contain this change.
+2. Open **`2. Post-Install Cleanup` → `Inspect SWBI State (Read-Only)`**. Read the boot IDs and partition safety checks. You can compare with **read-only** administrator commands `bcdedit /enum all` and `bcdedit /enum firmware`; never use `bcdedit /delete`, clear `BootNext`, or delete an EFI/recovery partition based on a name alone.
+3. **Only when** inspection shows **no SWBI-SETUP candidate partition**, a recognized old SWBI boot entry, and an independent Windows boot, decide whether to run boot-only cleanup. Explicitly confirm the desktop's independent boot, turn **off Dry-Run Safety Mode** for an intentional live change, and use **`Remove Recognized SWBI Boot Entries Only`**. A fresh active BCD backup is saved under `C:\ProgramData\SWBI\Work\bcd-backups` (the precise location is in the redacted SWBI log); boot-entry ownership is checked again before removal. No partition is deleted or resized on this path. If the entry is unfamiliar, BCD inspection failed, or another one-time boot is pending, **do not remove it**; share the redacted inspection/log with a trusted administrator instead.
+4. Re-inspect. Only once the old entries are absent should you consider a **new** preparation. If a SWBI-SETUP partition does exist, the normal cleanup path requires its own matching manifest and verified disk/partition identity; never assume an old log proves the current layout. Test boot/Setup disk detection on disposable hardware before relying on this for a real install.
+
+Old firmware entries without a manifest cannot be authenticated cryptographically by their name alone. Even ownership-checked cleanup should be treated as a deliberate boot-configuration change, not an automatic retry.
+</details>
+
 ---
 
 ## 9. Command-Line Options, Building from Source & Automated Testing
@@ -434,7 +443,9 @@ Windows-self-bootable/
 
 ### Building & Running Tests Locally (Windows 10/11 + .NET 8 SDK)
 
-The live storage tests attach and mutate disposable VHDs when run elevated on Windows. Tests that mutate the **host BCD** are disabled unless `SWBI_TEST_ALLOW_HOST_BCD_MUTATION=1` is explicitly set; use that opt-in **only inside a disposable Windows VM with backups**, never on a production PC. The mock/fault-injection tests do not validate actual firmware behavior.
+The live storage tests attach and mutate disposable VHDs when run elevated on Windows. The Windows-only `BootWimRoundTripWindowsTests` captures and rebuilds a synthetic two-image WIM with the real wimgapi and a staged driver; it **does not boot WinPE or test a real disk controller**. Tests that mutate the **host BCD** are disabled unless `SWBI_TEST_ALLOW_HOST_BCD_MUTATION=1` is explicitly set; use that opt-in **only inside a disposable Windows VM with backups**, never on a production PC. Mock/fault-injection and CI tests do not validate actual firmware behavior.
+
+**Manual validation gate before using this repair on important hardware:** In a disposable UEFI/GPT Windows VM, prepare and reboot from a freshly built branch EXE; confirm the Windows Boot Manager requests WinPE and Setup lists the correct disk **before changing any partition**. Repeat with a missing-driver/VMD VM if available, then return to installed Windows and confirm cleanup removes only the manifest-identified SWBI partition and reclaims C: when adjacent. On the affected PC, keep an external backup and recovery media, record SWBI's log, inspect Setup's disk list without modifying it, and stop if the disk is missing. CI cannot perform these checks.
 ```powershell
 # 1. Restore, compile, and run all unit & WPF UI tests
 dotnet restore UsbFreeWindowsInstaller.sln

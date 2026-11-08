@@ -102,91 +102,85 @@ public static class NativeUefiAndBcdRegistryEngine
     {
         if (!OperatingSystem.IsWindows())
         {
-            return new ActiveBcdState(false, string.Empty, string.Empty, null, null, null);
+            return new ActiveBcdState(false, string.Empty, string.Empty, null, null, null,
+                InspectionSucceeded: false);
         }
-
-        string? loaderGuid = null;
-        string? sdiGuid = null;
-        string? fwGuid = null;
-        bool currentIsRamdisk = false;
-        string devDesc = "partition=C:";
 
         try
         {
-            using SystemBcdObjectsScope? scope = SystemBcdObjectsScope.TryOpen(writable: false);
-            RegistryKey? objectsKey = scope?.ObjectsKey;
-            if (objectsKey is not null)
+            // A failed/denied BCD read is NOT evidence that there are no entries. Never let
+            // preparation proceed to a shrink on the basis of an incomplete inspection.
+            using SystemBcdObjectsScope scope = SystemBcdObjectsScope.TryOpen(writable: false)
+                ?? throw new InvalidOperationException("The active system BCD objects could not be opened for inspection.");
+            RegistryKey objectsKey = scope.ObjectsKey
+                ?? throw new InvalidOperationException("The active system BCD objects could not be enumerated.");
+
+            string? loaderGuid = null;
+            string? sdiGuid = null;
+            string? fwGuid = null;
+            foreach (string subName in objectsKey.GetSubKeyNames())
             {
-                foreach (string subName in objectsKey.GetSubKeyNames())
-                {
-                    using RegistryKey? objKey = objectsKey.OpenSubKey(subName);
-                    if (objKey is null) continue;
+                using RegistryKey? objKey = objectsKey.OpenSubKey(subName);
+                if (objKey is null)
+                    throw new InvalidOperationException($"BCD object {subName} could not be inspected.");
 
-                    using RegistryKey? descKey = objKey.OpenSubKey(@"Description");
-                    int objType = descKey?.GetValue("Type") is int t ? t : 0;
+                using RegistryKey? descKey = objKey.OpenSubKey("Description");
+                int objType = descKey?.GetValue("Type") is int t ? t : 0;
+                using RegistryKey? titleElem = objKey.OpenSubKey($@"Elements\{ElemDescription}");
+                string title = titleElem?.GetValue("Element") as string ?? string.Empty;
 
-                    using RegistryKey? titleElem = objKey.OpenSubKey($@"Elements\{ElemDescription}");
-                    string title = titleElem?.GetValue("Element") as string ?? string.Empty;
-
-                    bool isSwbiEntry =
-                        title.Contains("SWBI", StringComparison.OrdinalIgnoreCase) ||
-                        title.Contains("Self Windows Bootable Installer", StringComparison.OrdinalIgnoreCase) ||
-                        title.Contains("USB-Free Windows Setup", StringComparison.OrdinalIgnoreCase);
-
-                    if (!isSwbiEntry)
-                    {
-                        continue;
-                    }
-
-                    if (objType == BcdTypeDeviceObject)
-                    {
-                        sdiGuid ??= subName;
-                    }
-                    else if (objType == BcdTypeOsLoader)
-                    {
-                        loaderGuid ??= subName;
-                    }
-                    else
-                    {
-                        fwGuid ??= subName;
-                    }
-                }
+                // The cleanup writer accepts only these exact names. A substring match can
+                // wrongly block preparation on an unrelated entry it could never remove.
+                if (objType == BcdTypeDeviceObject && SwbiBrand.IsRecognizedSdiDescription(title))
+                    sdiGuid ??= subName;
+                else if (objType == BcdTypeOsLoader && SwbiBrand.IsRecognizedBootDescription(title))
+                    loaderGuid ??= subName;
+                else if (objType != BcdTypeOsLoader && objType != BcdTypeDeviceObject &&
+                         SwbiBrand.IsRecognizedBootDescription(title))
+                    fwGuid ??= subName; // Legacy firmware-application BCD entry.
             }
 
-            // Detect if currently booted inside WinPE (MiniNT registry key is always present in WinPE ramdisk boot)
+            int pendingStatus = Win32StorageInterop.RegOpenKeyExW(scope.ObjectsHandle,
+                $@"{BootMgrObjectGuid}\Elements\{ElemBootSequence}", 0, KEY_READ, out IntPtr pending);
+            if (pendingStatus == 0)
+                Win32StorageInterop.RegCloseKey(pending);
+            else if (pendingStatus != 2) // ERROR_FILE_NOT_FOUND
+                throw new InvalidOperationException($"Cannot inspect the existing Windows boot sequence (Win32 {pendingStatus}).");
+
+            // MiniNT is always present when running from a WinPE ramdisk.
             using RegistryKey? miniNt = Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Control\MiniNT");
-            if (miniNt is not null)
-            {
-                currentIsRamdisk = true;
-                devDesc = "ramdisk=[boot]\\sources\\boot.wim";
-            }
+            bool isRamdisk = miniNt is not null;
+            string device = isRamdisk ? "ramdisk=[boot]\\sources\\boot.wim" : "partition=C:";
+
+            // Older SWBI versions left firmware BootXXXX slots in BootOrder. A firmware read
+            // failure must not make a detected BCD entry disappear from this result.
+            if (fwGuid is null && TryFindExistingSwbiUefiBootSlot(out ushort slot))
+                fwGuid = $"UEFI:Boot{slot:X4}";
+
+            return new ActiveBcdState(isRamdisk, device, device, loaderGuid, sdiGuid, fwGuid,
+                HasPendingBootSequence: pendingStatus == 0);
         }
         catch
         {
-            // Ignore read-only inspection errors
+            // Fail closed instead of treating access errors as a clean boot configuration.
+            return new ActiveBcdState(false, string.Empty, string.Empty, null, null, null,
+                InspectionSucceeded: false);
         }
-
-        // Also check UEFI NVRAM for an active SWBI BootXXXX slot
-        if (fwGuid is null && TryFindExistingSwbiUefiBootSlot(out ushort slot))
-        {
-            fwGuid = $"UEFI:Boot{slot:X4}";
-        }
-
-        return new ActiveBcdState(currentIsRamdisk, devDesc, devDesc, loaderGuid, sdiGuid, fwGuid);
     }
 
     /// <summary>
-    /// Provisions the legacy BIOS boot entry in the system BCD without invoking bcdedit.exe.
-    /// UEFI uses the standalone installer boot path and must not call this method.
+    /// Provisions a one-time WinPE ramdisk in the already-active Windows Boot Manager BCD.
+    /// On UEFI this uses winload.efi; on legacy BIOS it uses winload.exe. Neither path
+    /// replaces the host boot manager or writes to the installer's standalone BCD.
     /// </summary>
     public static (string SdiGuid, string LoaderGuid) ProvisionSystemBcdInRegistry(
         string installerDriveLetter,
         FirmwareMode firmwareMode,
         ISafeLogger logger)
     {
-        if (firmwareMode != FirmwareMode.LegacyBios)
+        if (firmwareMode is not (FirmwareMode.Uefi or FirmwareMode.LegacyBios))
         {
-            throw new InvalidOperationException("System BCD provisioning is restricted to legacy BIOS; UEFI uses only firmware BootNext.");
+            throw new InvalidOperationException("Cannot provision BCD without a known firmware mode.");
         }
         if (!OperatingSystem.IsWindows())
         {
@@ -256,16 +250,35 @@ public static class NativeUefiAndBcdRegistryEngine
             SetMultiSzElement(hObjects, BootMgrObjectGuid, ElemBootSequence, new[] { loaderGuid });
 
             int flushError = Win32StorageInterop.RegFlushKey(hObjects);
-            if (flushError != 0) throw new System.ComponentModel.Win32Exception(flushError, "Failed to flush the legacy BCD hive.");
-            logger.Info("NativeBCD", $"Provisioned '{SwbiBrand.BootChooserEntryName}' ({loaderGuid}) directly in HKLM\\BCD00000000.");
+            if (flushError != 0) throw new System.ComponentModel.Win32Exception(flushError, "Failed to flush the system BCD hive.");
+            VerifyOneTimeBootSequence(hObjects, loaderGuid);
+            logger.Info("NativeBCD", $"Provisioned '{SwbiBrand.BootChooserEntryName}' ({loaderGuid}, {firmwareMode}) directly in HKLM\\BCD00000000 with a verified one-time boot sequence.");
             return (sdiGuid, loaderGuid);
         }
         catch (Exception error)
         {
             // Raw BCD writes can fail midway. Do not delete the partition or claim rollback succeeded.
             throw new FirmwareBootProvisionException(
-                "Legacy BCD provisioning may be incomplete. Keep the installer partition and inspect the saved BCD backup before restarting.",
+                "System BCD provisioning may be incomplete. Keep the installer partition and inspect the saved BCD backup before restarting. " + error.Message,
                 cleanupIncomplete: true, inner: error);
+        }
+    }
+
+    private static void VerifyOneTimeBootSequence(IntPtr objects, string loaderGuid)
+    {
+        int status = Win32StorageInterop.RegOpenKeyExW(objects,
+            $@"{BootMgrObjectGuid}\Elements\{ElemBootSequence}",
+            Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr sequenceKey);
+        if (status != 0 || sequenceKey == IntPtr.Zero)
+            throw new System.ComponentModel.Win32Exception(status, "Could not re-read the one-time BCD boot sequence.");
+        try
+        {
+            if (!ReadMultiSzValue(sequenceKey, "Element").SequenceEqual(new[] { loaderGuid }, StringComparer.OrdinalIgnoreCase))
+                throw new InvalidOperationException("The system BCD did not retain SWBI's one-time boot sequence.");
+        }
+        finally
+        {
+            Win32StorageInterop.RegCloseKey(sequenceKey);
         }
     }
 
@@ -399,9 +412,17 @@ public static class NativeUefiAndBcdRegistryEngine
 
             IntPtr hObjects = scope.ObjectsHandle;
 
+            // Validate every BCD object before deleting any of them; a renamed/reused SDI
+            // object must not leave a previously deleted loader as a partial cleanup.
+            if (!string.IsNullOrWhiteSpace(osLoaderGuid))
+                VerifyOwnedBcdObject(hObjects, osLoaderGuid, isSdi: false);
+            if (!string.IsNullOrWhiteSpace(sdiDeviceGuid))
+                VerifyOwnedBcdObject(hObjects, sdiDeviceGuid, isSdi: true);
+            if (!string.IsNullOrWhiteSpace(firmwareBootId) && firmwareBootId.StartsWith('{'))
+                VerifyOwnedBcdObject(hObjects, firmwareBootId, isSdi: false, isFirmwareApp: true);
+
             if (!string.IsNullOrWhiteSpace(osLoaderGuid))
             {
-                VerifyOwnedBcdObject(hObjects, osLoaderGuid, isSdi: false);
                 RemoveGuidFromMultiSzElement(hObjects, BootMgrObjectGuid, ElemDisplayOrder, osLoaderGuid);
                 RemoveGuidFromMultiSzElement(hObjects, BootMgrObjectGuid, ElemBootSequence, osLoaderGuid);
                 DeleteKeyTreeBackupRestore(hObjects, osLoaderGuid);
@@ -409,13 +430,11 @@ public static class NativeUefiAndBcdRegistryEngine
 
             if (!string.IsNullOrWhiteSpace(sdiDeviceGuid))
             {
-                VerifyOwnedBcdObject(hObjects, sdiDeviceGuid, isSdi: true);
                 DeleteKeyTreeBackupRestore(hObjects, sdiDeviceGuid);
             }
 
             if (!string.IsNullOrWhiteSpace(firmwareBootId) && firmwareBootId.StartsWith('{'))
             {
-                VerifyOwnedBcdObject(hObjects, firmwareBootId, isSdi: false);
                 RemoveGuidFromMultiSzElement(hObjects, FwBootMgrObjectGuid, ElemDisplayOrder, firmwareBootId);
                 DeleteKeyTreeBackupRestore(hObjects, firmwareBootId);
             }
@@ -874,10 +893,12 @@ public static class NativeUefiAndBcdRegistryEngine
         }
     }
 
-    private static void VerifyOwnedBcdObject(IntPtr objects, string id, bool isSdi)
+    private static void VerifyOwnedBcdObject(IntPtr objects, string id, bool isSdi, bool isFirmwareApp = false)
     {
         if (!Guid.TryParse(id, out Guid parsed) || parsed == Guid.Empty)
             throw new InvalidOperationException("Invalid BCD identifier in the installer manifest.");
+        if (parsed == Guid.Parse(BootMgrObjectGuid) || parsed == Guid.Parse(FwBootMgrObjectGuid))
+            throw new InvalidOperationException("An SWBI cleanup identifier matches a system boot manager; refusing to delete it.");
 
         int objectError = Win32StorageInterop.RegOpenKeyExW(objects, id,
             Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr objectKey);
@@ -885,6 +906,45 @@ public static class NativeUefiAndBcdRegistryEngine
         if (objectError != 0 || objectKey == IntPtr.Zero)
             throw new System.ComponentModel.Win32Exception(objectError, "Cannot verify BCD entry ownership.");
         Win32StorageInterop.RegCloseKey(objectKey);
+
+        int typeError = Win32StorageInterop.RegOpenKeyExW(objects, $@"{id}\Description",
+            Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr typeKey);
+        if (typeError != 0 || typeKey == IntPtr.Zero)
+            throw new InvalidOperationException($"BCD entry {id} has no verifiable object type.");
+        try
+        {
+            uint size = 4;
+            byte[] raw = new byte[4];
+            typeError = Win32StorageInterop.RegQueryValueExW(typeKey, "Type", IntPtr.Zero, out uint registryType, raw, ref size);
+            if (typeError != 0 || registryType != Win32StorageInterop.REG_DWORD || size != 4)
+                throw new InvalidOperationException($"BCD entry {id} has an invalid object type.");
+            int objectType = BinaryPrimitives.ReadInt32LittleEndian(raw);
+            bool expectedType = isSdi ? objectType == BcdTypeDeviceObject
+                : isFirmwareApp ? objectType != BcdTypeOsLoader && objectType != BcdTypeDeviceObject
+                : objectType == BcdTypeOsLoader;
+            if (!expectedType)
+                throw new InvalidOperationException($"BCD entry {id} changed type; it was not removed.");
+        }
+        finally { Win32StorageInterop.RegCloseKey(typeKey); }
+
+        if (!isSdi && !isFirmwareApp)
+        {
+            // A normal Windows OS loader must never be removed simply because it was
+            // renamed to SWBI. SWBI's own ramdisk loader has WinPE=true.
+            int peError = Win32StorageInterop.RegOpenKeyExW(objects, $@"{id}\Elements\{ElemWinPe}",
+                Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr peKey);
+            if (peError != 0 || peKey == IntPtr.Zero)
+                throw new InvalidOperationException($"BCD entry {id} is not a verifiable WinPE loader.");
+            try
+            {
+                uint size = 8;
+                byte[] raw = new byte[8];
+                peError = Win32StorageInterop.RegQueryValueExW(peKey, "Element", IntPtr.Zero, out uint regType, raw, ref size);
+                if (peError != 0 || regType != Win32StorageInterop.REG_BINARY || size is < 1 or > 8 || raw[0] == 0)
+                    throw new InvalidOperationException($"BCD entry {id} is not marked as an SWBI WinPE loader.");
+            }
+            finally { Win32StorageInterop.RegCloseKey(peKey); }
+        }
 
         int error = Win32StorageInterop.RegOpenKeyExW(objects, $@"{id}\Elements\{ElemDescription}",
             Win32StorageInterop.REG_OPTION_BACKUP_RESTORE, KEY_READ, out IntPtr descriptionKey);

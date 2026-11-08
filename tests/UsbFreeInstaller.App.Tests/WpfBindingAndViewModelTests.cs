@@ -57,6 +57,59 @@ public sealed class WpfBindingAndViewModelTests
     }
 
     [Fact]
+    public void PreparationConflict_ShowsFailureAfterRescan_InsteadOf100PercentOrEnablingNext()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        RunOnStaThread(() =>
+        {
+            SimulationScenario scenario = SimulatedEnvironmentProvider.CreateHealthySingleDriveScenario();
+            SystemEnvironmentSnapshot env = scenario.Environment with { IsSimulated = false, IsElevated = true };
+            var logger = new SafeRedactingLogger();
+            var disk = new StubDiskInspector(env);
+            var partitions = new StubPartitionService();
+            var bcd = new StubBcdBootService
+            {
+                State = new ActiveBcdState(false, "partition=C:", "partition=C:",
+                    "{11111111-1111-1111-1111-111111111111}", null)
+            };
+            var readiness = new ReadinessEvaluator(new PartitionSizingCalculator());
+            var guides = new SetupGuideGenerator();
+            var orchestrator = new PreparationOrchestrator(disk, partitions,
+                new StubIsoDeploymentService(), bcd, readiness, guides, logger);
+            var vm = new MainViewModel(disk, new StubIsoInspector(scenario.SampleIso), bcd,
+                readiness, guides, orchestrator, new CleanupService(disk, partitions, bcd, logger), logger,
+                startInSimulationMode: false) { ShowInteractiveDialogs = false };
+
+            AwaitWithDispatcher(vm.RefreshSystemScanAsync());
+            vm.IsoPathInput = scenario.SampleIso.IsoPath;
+            AwaitWithDispatcher(vm.ValidateSelectedIsoAsync());
+            vm.IsDryRunMode = false;
+            vm.ConfirmExternalBackup = true;
+            vm.ConfirmWipeOldPartition = true;
+            vm.ConfirmPreserveInstaller = true;
+            vm.ConfirmBitLockerRecoveryKey = true;
+            vm.CurrentWizardStep = 4;
+            Assert.True(vm.CanStartPreparation());
+
+            AwaitWithDispatcher(vm.RunPreparationAsync());
+            Assert.NotNull(vm.LastPreparationResult);
+            Assert.False(vm.LastPreparationResult!.Succeeded);
+            Assert.InRange(vm.PrepProgressPercent, 0, 99);
+            Assert.Equal(4, vm.CurrentWizardStep);
+            Assert.False(vm.CanMoveNextStep());
+            Assert.Contains("Existing SWBI boot entries", vm.BusyStatusText);
+            Assert.Contains("2. Post-Install Cleanup", vm.PrepStepDetail);
+
+            vm.SelectCleanupTabCommand.Execute(null);
+            AwaitWithDispatcher(vm.CleanupVm.InspectAsync());
+            Assert.Equal(CleanupSafetyState.ReadyToClean, vm.CleanupVm.Inspection?.State);
+            Assert.Null(vm.CleanupVm.Inspection?.CandidatePartition);
+            Assert.Equal("Remove Recognized SWBI Boot Entries Only", vm.CleanupVm.CleanupActionLabel);
+        });
+    }
+
+    [Fact]
     public void ValueConverters_HandleNullEmptyAndUnsetValueCleanly()
     {
         var nullToVis = new NullOrEmptyToVisibilityConverter();
@@ -460,8 +513,9 @@ public sealed class WpfBindingAndViewModelTests
             bool includeNetworkDrivers,
             bool injectStorageIntoBootWim,
             IProgress<DeploymentProgress>? progress = null,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(new DriverHarvestSummary(2, 1, 1024 * 1024, injectStorageIntoBootWim));
+            CancellationToken cancellationToken = default,
+            string? activeControllerServiceName = null) =>
+            Task.FromResult(new DriverHarvestSummary(2, 1, 1024 * 1024, injectStorageIntoBootWim, true));
 
         public Task LaunchInPlaceUpgradeSetupAsync(string installerDriveLetter, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
@@ -469,14 +523,15 @@ public sealed class WpfBindingAndViewModelTests
 
     private sealed class StubBcdBootService : IBcdBootService
     {
+        public ActiveBcdState State { get; init; } = new(false, "partition=C:", "partition=C:", null, null, null);
+
         public Task<BcdProvisionResult> ConfigureOneTimeWinPeBootAsync(
             string installerDriveLetter,
             string backupDirectory,
             FirmwareMode firmwareMode = FirmwareMode.Uefi,
             CancellationToken cancellationToken = default) =>
-            Task.FromResult(firmwareMode == FirmwareMode.Uefi
-                ? new BcdProvisionResult(null, null, null, "UEFI:Boot0010")
-                : new BcdProvisionResult("bcd.bak", "{11111111-1111-1111-1111-111111111111}", "{22222222-2222-2222-2222-222222222222}", null));
+            Task.FromResult(new BcdProvisionResult("bcd.bak", "{11111111-1111-1111-1111-111111111111}",
+                "{22222222-2222-2222-2222-222222222222}", null));
 
         public Task RollbackBcdEntriesAsync(
             string? osLoaderGuid,
@@ -486,7 +541,7 @@ public sealed class WpfBindingAndViewModelTests
             Task.CompletedTask;
 
         public Task<ActiveBcdState> InspectActiveBcdAsync(CancellationToken cancellationToken = default) =>
-            Task.FromResult(new ActiveBcdState(false, "partition=C:", "partition=C:", null, null, null));
+            Task.FromResult(State);
 
         public Task RebootSystemAsync(int delaySeconds = 5, CancellationToken cancellationToken = default) =>
             Task.CompletedTask;
