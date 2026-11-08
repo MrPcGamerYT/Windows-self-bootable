@@ -1098,12 +1098,15 @@ public sealed class MainViewModel : ObservableObject
 
         var progress = new Progress<PreparationProgressUpdate>(u =>
         {
-            PrepProgressPercent = u.Percent;
+            // A failed/rolled-back preparation is never 100% complete even if ISO copying
+            // reached 100%. The only 100% state is a verified, armed installer.
+            PrepProgressPercent = u.State == PreparationStepState.Failed ? Math.Min(u.Percent, 99) : u.Percent;
             PrepStepTitle = $"Step {u.StepIndex}/{u.TotalSteps}: {u.StepTitle}";
             PrepStepDetail = u.Detail;
         });
 
         bool rescanRequired = true;
+        string? failureStatus = null;
         try
         {
             PreparationResult result = await _orchestrator.ExecuteAsync(
@@ -1123,6 +1126,13 @@ public sealed class MainViewModel : ObservableObject
                 PrepProgressPercent = 100;
                 CurrentWizardStep = 5;
             }
+            else
+            {
+                failureStatus = result.Summary;
+                PrepProgressPercent = Math.Min(PrepProgressPercent, 99);
+                PrepStepTitle = "Preparation blocked — installer NOT armed";
+                PrepStepDetail = result.ErrorMessage ?? result.Summary;
+            }
         }
         catch (OperationCanceledException)
         {
@@ -1132,6 +1142,7 @@ public sealed class MainViewModel : ObservableObject
             PrepStepTitle = "Cancelled";
             PrepStepDetail = "Preparation stopped at a safe boundary. Steps that already completed are still applied.";
             BusyStatusText = "Preparation cancelled — re-scanning the disk so the wizard reflects its real state.";
+            failureStatus = BusyStatusText;
         }
         catch (Exception ex)
         {
@@ -1141,6 +1152,8 @@ public sealed class MainViewModel : ObservableObject
             PrepStepTitle = "Preparation failed";
             PrepStepDetail = ex.Message;
             BusyStatusText = $"Preparation failed: {ex.Message}. Inspect the disk and the log before retrying.";
+            failureStatus = BusyStatusText;
+            PrepProgressPercent = Math.Min(PrepProgressPercent, 99);
             if (ShowInteractiveDialogs)
             {
                 MessageBox.Show(
@@ -1162,6 +1175,10 @@ public sealed class MainViewModel : ObservableObject
             // Reflect whatever actually happened on disk (shrunk C:, created partition, armed boot entry)
             // instead of leaving the wizard showing the pre-cancellation state.
             await RefreshSystemScanAsync();
+            // A re-scan must update the layout without replacing the actionable failure
+            // with the generic 'inspection complete' status below the disabled Next button.
+            if (failureStatus is not null)
+                BusyStatusText = failureStatus;
         }
     }
 

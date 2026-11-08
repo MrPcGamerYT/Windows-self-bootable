@@ -58,7 +58,10 @@ public sealed record ActiveBcdState(
     string CurrentOsDeviceRaw,
     string? ExistingUsbFreeLoaderGuid,
     string? ExistingUsbFreeSdiGuid,
-    string? ExistingFirmwareBootGuid = null);
+    string? ExistingFirmwareBootGuid = null,
+    bool InspectionSucceeded = true,
+    bool HasPendingBootSequence = false,
+    bool FirmwareEntryVerified = true);
 
 public interface IBcdBootService
 {

@@ -48,6 +48,28 @@ public sealed class CleanupService
         DiskSnapshot? targetDisk = env.TargetDisk;
         PartitionSnapshot? osPart = env.TargetOsPartition;
 
+        if (!bcdState.InspectionSucceeded)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-bcd-inspection",
+                Category = "Boot",
+                Title = "Active BCD Inspection Failed — No Cleanup Allowed",
+                Severity = CheckSeverity.Blocker,
+                Summary = "Could not inspect the active system BCD. Absence of entries cannot be assumed; no boot or partition changes are allowed.",
+                RemediationHint = "Run SWBI as Administrator and inspect the log; do not delete any boot entries or partitions manually."
+            });
+            return new CleanupInspectionResult
+            {
+                State = CleanupSafetyState.BlockedActiveDependency,
+                CurrentOsDiskNumber = env.TargetDiskNumber,
+                CurrentOsPartitionNumber = env.TargetOsPartitionNumber,
+                CurrentBootUsesRamdisk = bcdState.CurrentBootIsRamdisk,
+                CurrentBootDependsOnInstaller = true,
+                SafetyChecks = checks
+            };
+        }
+
         if (targetDisk is null || osPart is null)
         {
             checks.Add(new SystemCheckItem
@@ -77,6 +99,31 @@ public sealed class CleanupService
                 SwbiBrand.IsRecognizedPartitionLabel(p.Label));
 
         InstallerManifest? manifest = simulatedManifest ?? TryReadManifestFromPartition(candidate);
+
+        if (!bcdState.FirmwareEntryVerified)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-firmware-ownership",
+                Category = "Boot",
+                Title = "Named UEFI Entry Has an Unverifiable Device Path",
+                Severity = CheckSeverity.Blocker,
+                Summary = $"The old SWBI-named firmware slot {bcdState.ExistingFirmwareBootGuid} lacks a verifiable SWBI installer EFI path or falls outside SWBI's owned slot range. It will not be deleted based on its name alone.",
+                RemediationHint = "Do not retry preparation or edit BootOrder/BootNext manually. Capture the read-only inspection and ask a trusted administrator to review this entry."
+            });
+            return new CleanupInspectionResult
+            {
+                State = CleanupSafetyState.BlockedAmbiguousPartition,
+                CurrentOsDiskNumber = targetDisk.DiskNumber,
+                CurrentOsPartitionNumber = osPart.PartitionNumber,
+                CurrentBootUsesRamdisk = bcdState.CurrentBootIsRamdisk,
+                CurrentBootDependsOnInstaller = bcdState.CurrentBootIsRamdisk,
+                CandidatePartition = candidate,
+                DiscoveredManifest = manifest,
+                OrphanedBcdFirmwareGuid = bcdState.ExistingFirmwareBootGuid,
+                SafetyChecks = checks
+            };
+        }
 
         // New manifests record exactly one boot mechanism. Never infer an unrelated entry
         // from the current system when that manifest deliberately left a field empty.
@@ -276,6 +323,19 @@ public sealed class CleanupService
             });
         }
 
+        if (candidate is null)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-boot-only",
+                Category = "Recovery",
+                Title = "Orphaned Boot Entry — No Installer Partition",
+                Severity = CheckSeverity.Warning,
+                Summary = "No SWBI-SETUP partition was found on the Windows disk. Cleanup will only remove the identified SWBI boot entries; C: and all partitions stay untouched.",
+                RemediationHint = "Review the identifiers and confirm Windows boots independently. SWBI saves a fresh active-BCD backup and checks BCD type/title and WinPE flags or the older UEFI option's title/device path before removal. No manifest remains for cryptographic proof of an old firmware slot; if anything is unfamiliar, stop and inspect the log."
+            });
+        }
+
         AdjacencyAnalysis? adjacency = candidate is not null
             ? AnalyzeAdjacency(targetDisk, osPart, candidate)
             : null;
@@ -411,9 +471,11 @@ public sealed class CleanupService
                 PartitionDeleted = willDeletePart,
                 OsPartitionExtended = willExtendOs,
                 ReclaimedBytes = willExtendOs ? (inspection.Adjacency?.ReclaimableBytes ?? 0L) : 0L,
-                Summary = willExtendOs
-                    ? $"[Dry-Run] Verified removal of '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition and extension of C: (+{inspection.Adjacency!.ReclaimableDisplay})."
-                    : $"[Dry-Run] Verified removal of '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition (unallocated space left intact)."
+                Summary = !willDeletePart
+                    ? "[Dry-Run] Would remove the identified SWBI boot entries only; no installer partition exists and C: would not be changed."
+                    : willExtendOs
+                        ? $"[Dry-Run] Would remove '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition and extend C: (+{inspection.Adjacency!.ReclaimableDisplay})."
+                        : $"[Dry-Run] Would remove '{SwbiBrand.BootChooserEntryName}' boot entries + '{SwbiBrand.PartitionVolumeLabel}' partition (unallocated space left intact)."
             };
         }
 
@@ -423,6 +485,40 @@ public sealed class CleanupService
         bool osExtended = false;
         try
         {
+            // The user may have left this screen open while another operation changed BCD
+            // or disk layout. Re-inspect from the actual machine immediately before mutation;
+            // an old orphaned GUID must never be replayed against a new boot entry.
+            SystemEnvironmentSnapshot currentEnv = await _diskInspector.InspectEnvironmentAsync(cancellationToken).ConfigureAwait(false);
+            CleanupInspectionResult current = await InspectAsync(currentEnv,
+                currentEnv.IsSimulated ? inspection.DiscoveredManifest : null,
+                cancellationToken).ConfigureAwait(false);
+            PartitionSnapshot? expectedPart = inspection.CandidatePartition;
+            PartitionSnapshot? currentPart = current.CandidatePartition;
+            bool samePartition = expectedPart is null && currentPart is null ||
+                expectedPart is not null && currentPart is not null &&
+                expectedPart.DiskNumber == currentPart.DiskNumber &&
+                expectedPart.PartitionNumber == currentPart.PartitionNumber &&
+                expectedPart.OffsetBytes == currentPart.OffsetBytes &&
+                expectedPart.SizeBytes == currentPart.SizeBytes &&
+                string.Equals(expectedPart.PartitionGuid, currentPart.PartitionGuid, StringComparison.OrdinalIgnoreCase);
+            bool sameBoot = string.Equals(inspection.OrphanedBcdLoaderGuid, current.OrphanedBcdLoaderGuid, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(inspection.OrphanedBcdSdiGuid, current.OrphanedBcdSdiGuid, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(inspection.OrphanedBcdFirmwareGuid, current.OrphanedBcdFirmwareGuid, StringComparison.OrdinalIgnoreCase);
+            if (!current.CanExecuteCleanup || !samePartition || !sameBoot ||
+                current.CurrentOsDiskNumber != inspection.CurrentOsDiskNumber ||
+                current.CurrentOsPartitionNumber != inspection.CurrentOsPartitionNumber ||
+                current.CurrentOsPartitionOffsetBytes != inspection.CurrentOsPartitionOffsetBytes)
+            {
+                _logger.Warn("Cleanup", "The boot/disk state changed since inspection; refusing to remove stale boot entries or partitions.");
+                return new CleanupExecutionResult
+                {
+                    Succeeded = false,
+                    Mode = ExecutionMode.Live,
+                    Summary = "Boot or disk state changed since the last inspection. Nothing was removed; inspect again before retrying.",
+                    ErrorMessage = "Stale cleanup inspection."
+                };
+            }
+
             if (willRemoveBcd)
             {
                 await _bcdBootService.RollbackBcdEntriesAsync(
@@ -463,16 +559,20 @@ public sealed class CleanupService
                 PartitionDeleted = partitionDeleted,
                 OsPartitionExtended = osExtended,
                 ReclaimedBytes = reclaimed,
-                Summary = osExtended
-                    ? $"Removed temporary {SwbiBrand.ShortName} installer resources and extended C: by {ByteFormatting.FormatGb(reclaimed)}."
-                    : $"Removed temporary '{SwbiBrand.PartitionVolumeLabel}' partition and '{SwbiBrand.BootChooserEntryName}' boot entries. Freed space is now unallocated."
+                Summary = !willDeletePart
+                    ? "Removed the identified SWBI boot entries only. No partition was deleted and C: was not changed. Re-inspect before preparing again."
+                    : osExtended
+                        ? $"Removed temporary {SwbiBrand.ShortName} installer resources and extended C: by {ByteFormatting.FormatGb(reclaimed)}."
+                        : $"Removed temporary '{SwbiBrand.PartitionVolumeLabel}' partition and '{SwbiBrand.BootChooserEntryName}' boot entries. Freed space is now unallocated."
             };
         }
         catch (Exception ex)
         {
             _logger.Error("Cleanup", $"Cleanup stopped (boot removed: {bootEntriesRemoved}; partition deleted: {partitionDeleted}; " +
                 $"C: extended: {osExtended}): {ex.Message}");
-            string stage = partitionDeleted
+            string stage = !willDeletePart
+                ? "Boot-only cleanup stopped. No partition was changed; some boot entries may already have been removed. Re-inspect before retrying. "
+                : partitionDeleted
                 ? $"The {SwbiBrand.PartitionVolumeLabel} partition WAS deleted, but C: extension failed. " +
                   "Space may be unallocated or the partition may be larger than its NTFS filesystem. " +
                   "Inspect both in Disk Management; do not delete any more partitions."

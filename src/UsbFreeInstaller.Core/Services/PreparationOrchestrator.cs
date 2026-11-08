@@ -118,15 +118,43 @@ public sealed class PreparationOrchestrator
         DriveOptimizationPlan drivePlan = freshReport.Compatibility?.DrivePlan
             ?? new SmartCompatibilityAnalyzer().BuildDriveOptimizationPlan(targetDisk, freshEnv.ShrinkInfo);
 
+        // A previous run can leave a BCD/UEFI entry after its installer partition is gone.
+        // Inspect BEFORE BitLocker suspension, pre-shrink optimization, and any partition write.
+        // The boot service repeats the check after its backup to detect a concurrent change.
+        Report(progress, 1, totalSteps, "Checking existing boot entries before disk changes",
+            "Inspecting active system BCD, pending one-time boot, and older SWBI firmware entries...",
+            6, PreparationStepState.Running);
+        string? bootBlocker;
+        try
+        {
+            ActiveBcdState bootState = await _bcdBootService.InspectActiveBcdAsync(cancellationToken).ConfigureAwait(false);
+            bootBlocker = WindowsBcdBootService.GetPreparationBlocker(bootState);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.Warn("Orchestrator", $"Preflight boot inspection failed: {ex.Message}");
+            bootBlocker = "Could not inspect the active boot configuration (" + ex.Message +
+                "). No disk or boot changes were made. Inspect the SWBI log before retrying.";
+        }
+        if (bootBlocker is not null)
+        {
+            _logger.Warn("Orchestrator", $"Live preparation blocked before disk changes: {bootBlocker}");
+            Report(progress, 1, totalSteps, "Blocked before disk changes", bootBlocker, 6, PreparationStepState.Failed);
+            return FailResult(ExecutionMode.Live, bootBlocker +
+                " No BitLocker suspension, partition shrink, or ISO deployment was attempted.", executedActions);
+        }
+
         CreatedInstallerPartitionInfo? createdPartition = null;
         BcdProvisionResult? createdBcd = null;
         string? storageDriverWarning = null;
+        int lastStagePercent = 6; // 100% is reserved for a verified, armed installer.
 
         try
         {
             // Step 2: Suspend BitLocker + Drive-Aware Pre-Shrink Optimization (HDD defrag vs SSD/NVMe ReTrim)
             if (freshEnv.BitLocker is { IsEncryptedOrActive: true } && confirmations.AutoSuspendBitLockerForNextReboot)
             {
+                lastStagePercent = 10;
                 Report(progress, 2, totalSteps, "Suspending BitLocker for 1 reboot", $"Suspending BitLocker protection on {freshEnv.SystemDriveLetter}:...", 10, PreparationStepState.Running);
                 await _partitionService.SuspendBitLockerForNextRebootAsync(freshEnv.SystemDriveLetter, cancellationToken).ConfigureAwait(false);
                 executedActions.Add($"Suspended BitLocker protection on {freshEnv.SystemDriveLetter}: for 1 reboot.");
@@ -134,12 +162,14 @@ public sealed class PreparationOrchestrator
 
             if (options.RunDriveAwarePreShrinkOptimization)
             {
+                lastStagePercent = 14;
                 Report(progress, 2, totalSteps, $"Optimizing {targetDisk.DriveKindDisplay} before shrink", $"Running drive-safe optimization pass on {freshEnv.SystemDriveLetter}:...", 14, PreparationStepState.Running);
                 await _partitionService.OptimizeOsVolumeBeforeShrinkAsync(freshEnv.SystemDriveLetter, targetDisk.DriveKind, cancellationToken).ConfigureAwait(false);
                 executedActions.Add($"Tail-cluster evacuation for {freshEnv.SystemDriveLetter}: will run inside the {targetDisk.DriveKindDisplay} shrink transaction (no separate optimization pass).");
             }
 
             // Step 3: Shrink OS partition and create FAT32 SWBI-SETUP installer partition
+            lastStagePercent = 22;
             Report(
                 progress,
                 3,
@@ -162,6 +192,7 @@ public sealed class PreparationOrchestrator
                 $"Shrank Disk {targetDisk.DiskNumber} Partition {targetOsPart.PartitionNumber} and created FAT32 '{SwbiBrand.PartitionVolumeLabel}' partition {createdPartition.DriveLetter}: ({ByteFormatting.FormatGb(createdPartition.SizeBytes)}).");
 
             // Step 4: Extract ISO, split >4 GB WIM/ESD into .swm chunks, and apply SWBI drive icon + autorun branding
+            lastStagePercent = 28;
             var deployProgress = new Progress<DeploymentProgress>(dp =>
             {
                 int mappedPct = 28 + ((dp.Percent * 38) / 100);
@@ -185,6 +216,7 @@ public sealed class PreparationOrchestrator
             bool injectedBootWim = false;
             if (_driverHarvester is not null && (options.ExportHostStorageAndNetworkDrivers || options.InjectBootCriticalStorageDriversIntoBootWim))
             {
+                lastStagePercent = 68;
                 var drvProgress = new Progress<DeploymentProgress>(dp =>
                 {
                     int mappedPct = 68 + ((dp.Percent * 12) / 100);
@@ -226,6 +258,7 @@ public sealed class PreparationOrchestrator
             }
 
             // Step 6: Verify boot.wim, boot.sdi, EFI bootloader, and install.wim/.swm/.esd BEFORE modifying BCD
+            lastStagePercent = 84;
             Report(
                 progress,
                 6,
@@ -243,6 +276,7 @@ public sealed class PreparationOrchestrator
             executedActions.Add($"Verified WinPE boot files and DISM image readability on {createdPartition.DriveLetter}: ({SwbiBrand.PartitionVolumeLabel}).");
 
             // Step 7: Use exactly one one-time mechanism for the detected firmware mode.
+            lastStagePercent = 93;
             Report(
                 progress,
                 7,
@@ -371,8 +405,8 @@ public sealed class PreparationOrchestrator
                 targetDisk.DiskNumber, targetOsPart.PartitionNumber, targetOsPart.OffsetBytes,
                 executedActions).ConfigureAwait(false);
 
-            Report(progress, totalSteps, totalSteps, "Preparation stopped; inspect cleanup status",
-                ex.Message, 100, PreparationStepState.Failed);
+            Report(progress, totalSteps, totalSteps, "FAILED — installer was not armed; inspect cleanup status",
+                ex.Message, lastStagePercent, PreparationStepState.Failed);
 
             return FailResult(ExecutionMode.Live,
                 $"Preparation stopped. Cleanup was attempted where safe and may require manual inspection: {ex.Message}",

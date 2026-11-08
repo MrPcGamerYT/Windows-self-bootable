@@ -157,9 +157,12 @@ internal static class UefiBootRegistration
 
         string name = $"Boot{slot:X4}";
         FirmwareVariable? entry = store.Read(name);
-        if (entry is not null && !IsSwbiLoadOption(entry.Data))
+        // A description alone is not ownership. Require the EFI_LOAD_OPTION device path
+        // structure written by SWBI; never delete a reused slot, nor strip BootOrder for
+        // a missing BootXXXX variable without a matching option to verify.
+        if (entry is null || !IsSwbiLoadOption(entry.Data))
         {
-            throw new InvalidOperationException($"{name} no longer belongs to SWBI; it was not removed.");
+            throw new InvalidOperationException($"{name} has no verifiable SWBI installer device path; it was not removed.");
         }
 
         if (!TryRemoveOwned(store, slot, entry, removeFromOrder: true, removeBootNext: true))
@@ -232,13 +235,47 @@ internal static class UefiBootRegistration
         }
     }
 
+    // Inspect old firmware entries by name for reporting, even if their device path is
+    // malformed or has been repurposed. Such an entry must block new preparation but
+    // cannot be automatically removed.
+    internal static bool HasSwbiDescription(byte[] data) => TryReadSwbiDescriptionEnd(data, out _);
+
     internal static bool IsSwbiLoadOption(byte[] data)
     {
-        if (data.Length < 8) return false; // EFI_LOAD_OPTION header is 6 bytes.
-        int end = 6;
+        if (!TryReadSwbiDescriptionEnd(data, out int descriptionEnd)) return false;
+        int pathStart = descriptionEnd + 2;
+        int pathLength = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(4, 2));
+        if (pathLength < 52 || pathStart > data.Length - pathLength) return false;
+
+        ReadOnlySpan<byte> path = data.AsSpan(pathStart, pathLength);
+        // SWBI writes exactly HARDDRIVE_DP (42 bytes) + FILEPATH_DP + END_DP.
+        // Do not accept a same-title entry pointing to an ESP, another OS, or a
+        // malformed option. Firmware may append optional data after the path list.
+        if (path[0] != 4 || path[1] != 1 || BinaryPrimitives.ReadUInt16LittleEndian(path.Slice(2, 2)) != 42 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(path.Slice(4, 4)) == 0 ||
+            BinaryPrimitives.ReadUInt64LittleEndian(path.Slice(16, 8)) == 0 ||
+            path[42] != 4 || path[43] != 4) return false;
+
+        ushort fileLength = BinaryPrimitives.ReadUInt16LittleEndian(path.Slice(44, 2));
+        if (fileLength < 6 || (fileLength & 1) != 0 || 42 + fileLength + 4 != pathLength) return false;
+        ReadOnlySpan<byte> end = path.Slice(42 + fileLength, 4);
+        if (!end.SequenceEqual(new byte[] { 0x7F, 0xFF, 4, 0 })) return false;
+
+        ReadOnlySpan<byte> file = path.Slice(46, fileLength - 4);
+        if (file[^2] != 0 || file[^1] != 0) return false;
+        string efiPath = Encoding.Unicode.GetString(file[..^2]);
+        return efiPath.Equals(@"\EFI\BOOT\BOOTX64.EFI", StringComparison.OrdinalIgnoreCase) ||
+               efiPath.Equals(@"\EFI\BOOT\BOOTIA32.EFI", StringComparison.OrdinalIgnoreCase) ||
+               efiPath.Equals(@"\EFI\BOOT\BOOTAA64.EFI", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryReadSwbiDescriptionEnd(byte[] data, out int end)
+    {
+        end = 6;
+        if (data.Length < 8) return false;
         while (end + 1 < data.Length && (data[end] != 0 || data[end + 1] != 0)) end += 2;
-        if (end + 1 >= data.Length) return false;
-        return SwbiBrand.IsRecognizedBootDescription(Encoding.Unicode.GetString(data, 6, end - 6));
+        return end + 1 < data.Length &&
+            SwbiBrand.IsRecognizedBootDescription(Encoding.Unicode.GetString(data, 6, end - 6));
     }
 
     private static List<ushort> DecodeOrder(byte[] data)

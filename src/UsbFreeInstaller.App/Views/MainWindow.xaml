@@ -1167,10 +1167,10 @@
                                 <ColumnDefinition Width="Auto" />
                             </Grid.ColumnDefinitions>
                             <StackPanel Grid.Column="0" Margin="0,0,12,0">
-                                <TextBlock Text="Post-Install SWBI Cleanup &amp; Disk Space Reclamation"
+                                <TextBlock Text="SWBI Cleanup — Post-Install or Orphaned Boot Entry"
                                            FontSize="16"
                                            FontWeight="Bold" />
-                                <TextBlock Text="After your new Windows installation boots cleanly on its own, inspect and remove the temporary 'SWBI - Self Windows Bootable Installer' UEFI/BCD boot entries and 'SWBI-SETUP' partition."
+                                <TextBlock Text="Use after Windows installs, or before retrying preparation if an old SWBI boot entry remains but the installer partition was already rolled back. First inspect without changing anything; never remove an unfamiliar boot entry or an unverified partition."
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            FontSize="12.5"
                                            TextWrapping="Wrap"
@@ -1179,9 +1179,13 @@
                                            Foreground="#38BDF8"
                                            FontWeight="SemiBold"
                                            TextWrapping="Wrap" />
+                                <TextBlock Text="{Binding StatusDetail}"
+                                           Foreground="#FDE68A"
+                                           TextWrapping="Wrap"
+                                           Margin="0,4,0,0" />
                             </StackPanel>
                             <Button Grid.Column="1"
-                                    Content="↻  Inspect Post-Install State"
+                                    Content="↻  Inspect SWBI State (Read-Only)"
                                     Command="{Binding InspectCommand}"
                                     Style="{StaticResource SecondaryButtonStyle}"
                                     VerticalAlignment="Top" />
@@ -1248,11 +1252,13 @@
                                       IsEnabled="{Binding CanExtendOsDirectly}"
                                       Style="{StaticResource ModernCheckBoxStyle}" />
 
-                            <CheckBox Content="I confirm my new Windows installation boots normally into the desktop without needing SWBI Setup."
-                                      IsChecked="{Binding ConfirmedIndependentBoot}"
-                                      Style="{StaticResource ModernCheckBoxStyle}" />
+                            <CheckBox IsChecked="{Binding ConfirmedIndependentBoot}"
+                                      Style="{StaticResource ModernCheckBoxStyle}">
+                                <TextBlock Text="I confirm this Windows desktop boots independently without SWBI Setup, and I have reviewed the boot entries and partition listed above."
+                                           TextWrapping="Wrap" />
+                            </CheckBox>
 
-                            <Button Content="Remove SWBI Boot Entries &amp; Reclaim Partition"
+                            <Button Content="{Binding CleanupActionLabel}"
                                     Command="{Binding ExecuteCleanupCommand}"
                                     Style="{StaticResource PrimaryButtonStyle}"
                                     HorizontalAlignment="Left"
