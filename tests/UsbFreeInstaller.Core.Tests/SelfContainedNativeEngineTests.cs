@@ -236,6 +236,7 @@ public sealed class SelfContainedNativeEngineTests
 
         Assert.Equal(1u, BinaryPrimitives.ReadUInt32LittleEndian(uefiOpt.AsSpan(0, 4))); // LOAD_OPTION_ACTIVE
         Assert.Contains(SwbiBrand.BootChooserEntryName, Encoding.Unicode.GetString(uefiOpt));
+        Assert.True(UefiBootRegistration.IsSwbiLoadOption(uefiOpt)); // Cleanup recognizes our actual writer, not only test fakes.
         // End node must end with 0x7F, 0xFF, 0x04, 0x00
         Assert.Equal(0x7F, uefiOpt[^4]);
         Assert.Equal(0xFF, uefiOpt[^3]);

@@ -97,6 +97,8 @@ public sealed partial class WindowsBcdBootService : IBcdBootService
         }.Where(s => s is not null).Select(s => s!).ToArray();
         if (existing.Length > 0)
             return "Existing SWBI boot entries (" + string.Join(", ", existing) + ") must be inspected before preparing another boot. " +
+                (state.FirmwareEntryVerified ? string.Empty
+                    : "The named UEFI entry has an unverified EFI device path or unsupported slot and cannot be removed automatically. ") +
                 "Do not retry preparation or delete boot entries manually. In '2. Post-Install Cleanup', click Inspect; " +
                 "if there is no installer partition, the app can remove only verified SWBI boot entries after your confirmation.";
 

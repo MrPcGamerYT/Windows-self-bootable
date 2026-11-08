@@ -172,7 +172,9 @@ public sealed class CleanupViewModel : ObservableObject
                 CleanupSafetyState.NoInstallerArtifactsFound =>
                     $"Clean! No temporary '{SwbiBrand.PartitionVolumeLabel}' partition or '{SwbiBrand.BootChooserEntryName}' boot entry exists on this system.",
                 CleanupSafetyState.BlockedActiveDependency =>
-                    "Blocked: Current session still depends on a ramdisk or SWBI installer volume.",
+                    "Blocked: Cannot verify independent boot or inspect the active BCD. Read the safety checks before continuing.",
+                CleanupSafetyState.BlockedAmbiguousPartition when result.SafetyChecks.Any(c => c.Id == "cleanup-firmware-ownership") =>
+                    "Blocked: The SWBI-named UEFI entry has an unverified EFI path or slot; do not remove it by name alone.",
                 CleanupSafetyState.BlockedAmbiguousPartition =>
                     $"Blocked: Candidate partition lacks a verified {SwbiBrand.ManifestFileName} matching its GPT/MBR partition identity.",
                 _ => "Inspection complete."

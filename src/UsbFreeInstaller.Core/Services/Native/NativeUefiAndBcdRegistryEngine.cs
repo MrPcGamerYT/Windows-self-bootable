@@ -152,13 +152,18 @@ public static class NativeUefiAndBcdRegistryEngine
             bool isRamdisk = miniNt is not null;
             string device = isRamdisk ? "ramdisk=[boot]\\sources\\boot.wim" : "partition=C:";
 
-            // Older SWBI versions left firmware BootXXXX slots in BootOrder. A firmware read
-            // failure must not make a detected BCD entry disappear from this result.
-            if (fwGuid is null && TryFindExistingSwbiUefiBootSlot(out ushort slot))
+            // Older SWBI versions left firmware BootXXXX slots in BootOrder. Identify a
+            // same-title slot for preflight, but expose whether its EFI path is actually
+            // SWBI-shaped so cleanup cannot treat a name-only match as ownership.
+            bool firmwareVerified = true;
+            if (fwGuid is null && TryFindExistingSwbiUefiBootSlot(out ushort slot, out bool slotVerified))
+            {
                 fwGuid = $"UEFI:Boot{slot:X4}";
+                firmwareVerified = slotVerified;
+            }
 
             return new ActiveBcdState(isRamdisk, device, device, loaderGuid, sdiGuid, fwGuid,
-                HasPendingBootSequence: pendingStatus == 0);
+                HasPendingBootSequence: pendingStatus == 0, FirmwareEntryVerified: firmwareVerified);
         }
         catch
         {
@@ -690,16 +695,18 @@ public static class NativeUefiAndBcdRegistryEngine
         throw new InvalidOperationException($"Unable to determine the disk for {cleanLetter}:; refusing to register a firmware path.");
     }
 
-    private static bool TryFindExistingSwbiUefiBootSlot(out ushort slot)
+    private static bool TryFindExistingSwbiUefiBootSlot(out ushort slot, out bool verified)
     {
         slot = 0;
+        verified = false;
         Win32StorageInterop.EnableProcessPrivilege("SeSystemEnvironmentPrivilege");
         foreach (ushort cand in ReadUefiUint16List("BootOrder"))
         {
             byte[]? val = ReadUefiVariable($"Boot{cand:X4}");
-            if (val is not null && UefiBootRegistration.IsSwbiLoadOption(val))
+            if (val is not null && UefiBootRegistration.HasSwbiDescription(val))
             {
                 slot = cand;
+                verified = UefiBootRegistration.IsSwbiLoadOption(val) && cand is >= 0x0010 and <= 0x004F;
                 return true;
             }
         }

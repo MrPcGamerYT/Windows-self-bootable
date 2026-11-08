@@ -100,6 +100,31 @@ public sealed class CleanupService
 
         InstallerManifest? manifest = simulatedManifest ?? TryReadManifestFromPartition(candidate);
 
+        if (!bcdState.FirmwareEntryVerified)
+        {
+            checks.Add(new SystemCheckItem
+            {
+                Id = "cleanup-firmware-ownership",
+                Category = "Boot",
+                Title = "Named UEFI Entry Has an Unverifiable Device Path",
+                Severity = CheckSeverity.Blocker,
+                Summary = $"The old SWBI-named firmware slot {bcdState.ExistingFirmwareBootGuid} lacks a verifiable SWBI installer EFI path or falls outside SWBI's owned slot range. It will not be deleted based on its name alone.",
+                RemediationHint = "Do not retry preparation or edit BootOrder/BootNext manually. Capture the read-only inspection and ask a trusted administrator to review this entry."
+            });
+            return new CleanupInspectionResult
+            {
+                State = CleanupSafetyState.BlockedAmbiguousPartition,
+                CurrentOsDiskNumber = targetDisk.DiskNumber,
+                CurrentOsPartitionNumber = osPart.PartitionNumber,
+                CurrentBootUsesRamdisk = bcdState.CurrentBootIsRamdisk,
+                CurrentBootDependsOnInstaller = bcdState.CurrentBootIsRamdisk,
+                CandidatePartition = candidate,
+                DiscoveredManifest = manifest,
+                OrphanedBcdFirmwareGuid = bcdState.ExistingFirmwareBootGuid,
+                SafetyChecks = checks
+            };
+        }
+
         // New manifests record exactly one boot mechanism. Never infer an unrelated entry
         // from the current system when that manifest deliberately left a field empty.
         bool recordedMode = manifest?.BootFirmwareMode is not null;
@@ -307,7 +332,7 @@ public sealed class CleanupService
                 Title = "Orphaned Boot Entry — No Installer Partition",
                 Severity = CheckSeverity.Warning,
                 Summary = "No SWBI-SETUP partition was found on the Windows disk. Cleanup will only remove the identified SWBI boot entries; C: and all partitions stay untouched.",
-                RemediationHint = "Review the identifiers above and confirm the current Windows boots independently. SWBI saves a fresh active-BCD backup and verifies entry ownership before removal. If anything is unfamiliar, stop and inspect the log instead."
+                RemediationHint = "Review the identifiers and confirm Windows boots independently. SWBI saves a fresh active-BCD backup and checks BCD type/title and WinPE flags or the older UEFI option's title/device path before removal. No manifest remains for cryptographic proof of an old firmware slot; if anything is unfamiliar, stop and inspect the log."
             });
         }
 

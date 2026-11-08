@@ -149,6 +149,39 @@ public sealed class CleanupServiceTests
     }
 
     [Fact]
+    public async Task BootOnlyRecovery_SameNameFirmwareWithDifferentEfiPath_IsBlocked()
+    {
+        SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
+        DiskSnapshot disk = scenario.Environment.TargetDisk!;
+        SystemEnvironmentSnapshot env = scenario.Environment with
+        {
+            IsSimulated = false,
+            AllDisks = new[] { disk with
+            {
+                Partitions = disk.Partitions.Where(p => p.Role != PartitionRole.TemporaryInstaller).ToArray()
+            } }
+        };
+        var boot = new NoOpBcdService
+        {
+            State = new ActiveBcdState(false, "partition=C:", "partition=C:", null, null,
+                "UEFI:Boot0010", FirmwareEntryVerified: false)
+        };
+        var partitions = new NoOpPartitionService();
+        var service = new CleanupService(new NoOpDiskInspector(env), partitions, boot, new SafeRedactingLogger());
+        CleanupInspectionResult inspection = await service.InspectAsync();
+        Assert.Equal(CleanupSafetyState.BlockedAmbiguousPartition, inspection.State);
+        Assert.False(inspection.CanExecuteCleanup);
+        Assert.Contains(inspection.SafetyChecks, c => c.Id == "cleanup-firmware-ownership" &&
+            c.Severity == CheckSeverity.Blocker);
+        Assert.Null(inspection.CandidatePartition);
+
+        CleanupExecutionResult result = await service.ExecuteCleanupAsync(inspection, true, ExecutionMode.Live);
+        Assert.False(result.Succeeded);
+        Assert.Equal(0, boot.RollbackCalls);
+        Assert.Equal(0, partitions.DeleteCalls);
+    }
+
+    [Fact]
     public async Task BootOnlyRecovery_IfBootIdentityChangesAfterInspection_RefusesStaleCleanup()
     {
         SimulationScenario scenario = SimulatedEnvironmentProvider.CreatePostInstallAdjacentCleanupScenario();
