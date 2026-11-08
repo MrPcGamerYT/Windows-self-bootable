@@ -920,7 +920,7 @@ public static class NativeUefiAndBcdRegistryEngine
                 throw new InvalidOperationException($"BCD entry {id} has an invalid object type.");
             int objectType = BinaryPrimitives.ReadInt32LittleEndian(raw);
             bool expectedType = isSdi ? objectType == BcdTypeDeviceObject
-                : isFirmwareApp ? objectType != BcdTypeOsLoader && objectType != BcdTypeDeviceObject
+                : isFirmwareApp ? objectType != 0 && objectType != BcdTypeOsLoader && objectType != BcdTypeDeviceObject
                 : objectType == BcdTypeOsLoader;
             if (!expectedType)
                 throw new InvalidOperationException($"BCD entry {id} changed type; it was not removed.");
